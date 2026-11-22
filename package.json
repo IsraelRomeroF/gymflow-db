@@ -1,0 +1,73 @@
+{
+  "name": "@gymflow/db",
+  "version": "0.1.0",
+  "description": "Esquema, migraciones y cliente de datos de GymFlow.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "prisma"
+  ],
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "packageManager": "pnpm@10.26.0",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "build": "pnpm generate && tsc -p tsconfig.json && node scripts/copy-generated.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "migrate": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "migrate:status": "prisma migrate status",
+    "studio": "prisma studio",
+    "bootstrap": "node scripts/bootstrap-db.mjs",
+    "verify:schema": "node scripts/verify-schema.mjs",
+    "seed": "tsx src/seed.ts",
+    "seed:demo": "tsx src/seed-demo.ts",
+    "seed:volume": "tsx src/seed-volume.ts",
+    "verify": "pnpm typecheck && pnpm lint"
+  },
+  "dependencies": {
+    "@gymflow/core": "link:../gymflow-core",
+    "@node-rs/argon2": "^2.2.1",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@prisma/client-runtime-utils": "7.10.0",
+    "pg": "^8.23.0",
+    "prisma": "7.10.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "dotenv": "^18.0.3",
+    "eslint": "^9.17.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.19.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "prisma",
+      "@prisma/engines",
+      "@prisma/client",
+      "esbuild"
+    ],
+    "overrides": {
+      "mysql2": ">=3.23.1",
+      "deepmerge-ts": ">=8.0.0"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+export { createPrismaClient, type Db } from './client.js';
+export { PrismaClient, Prisma } from './generated/client/client.js';
+
+/** Enums generados. Se exportan para que los repositorios tipen sus `where`
+ *  sin castear a ciegas; NO deben cruzar la capa de repositorio. */
+export {
+  MembershipStatus as PrismaMembershipStatus,
+  MembershipEventType as PrismaMembershipEventType,
+  VisitPackStatus as PrismaVisitPackStatus,
+  VisitLedgerEntryType as PrismaVisitLedgerEntryType,
+  MemberStatus as PrismaMemberStatus,
+  ProspectStatus as PrismaProspectStatus,
+  ConsentType as PrismaConsentType,
+  BillingModel as PrismaBillingModel,
+  DurationUnit as PrismaDurationUnit,
+  BranchAccessScope as PrismaBranchAccessScope,
+  AuditActorType as PrismaAuditActorType,
+  ChargeType as PrismaChargeType,
+  ChargeStatus as PrismaChargeStatus,
+  PaymentMethodType as PrismaPaymentMethodType,
+  PaymentStatus as PrismaPaymentStatus,
+  AdjustmentType as PrismaAdjustmentType,
+  BillingCycleStatus as PrismaBillingCycleStatus,
+  CashSessionStatus as PrismaCashSessionStatus,
+  CashMovementType as PrismaCashMovementType,
+  PosSaleStatus as PrismaPosSaleStatus,
+  InventoryMovementType as PrismaInventoryMovementType,
+  AccessOutcome as PrismaAccessOutcome,
+  CredentialKind as PrismaCredentialKind,
+  GatewayStatus as PrismaGatewayStatus,
+  ConsentDocumentStatus as PrismaConsentDocumentStatus,
+  MemberIntakeStatus as PrismaMemberIntakeStatus,
+  ClassOccurrenceStatus as PrismaClassOccurrenceStatus,
+  ClassBookingStatus as PrismaClassBookingStatus,
+  ClassBookingSource as PrismaClassBookingSource,
+  PaymentMethodStatus as PrismaPaymentMethodStatus,
+  PaymentAttemptOutcome as PrismaPaymentAttemptOutcome,
+  RefundStatus as PrismaRefundStatus,
+  ChargebackStatus as PrismaChargebackStatus,
+  WebhookEventStatus as PrismaWebhookEventStatus,
+  BiometricModality as PrismaBiometricModality,
+} from './generated/client/client.js';
+
+export type {
+  Organization, Branch, User, Role, Permission, RolePermission,
+  RoleAssignment, RoleLimitSet, Session, MfaFactor, AuditLog,
+  Member, MemberConsent, Prospect, Plan, PlanBranchAvailability, MemberCodeCounter,
+  Membership, MembershipBranchAccess, MembershipEvent, VisitPack, VisitLedgerEntry,
+  BillingCycle, Charge, ChargeAdjustment, Payment, PaymentAllocation,
+  CashRegister, CashSession, CashMovement,
+  Product, PosSale, PosSaleLine, InventoryStock, InventoryMovement,
+  AccessGateway, AccessDecision, AttendanceEvent, MemberCredential,
+  PortalInvite, MemberSession,
+  ConsentDocument, MemberIntake,
+  ClassType, ClassTemplate, ClassTemplateSlot, ClassSchedule, ClassBooking, ClassBookingBlock,
+  PaymentMethod, PaymentAttempt, Refund, Chargeback, WebhookEvent,
+  BiometricEnrollment,
+} from './generated/client/client.js';

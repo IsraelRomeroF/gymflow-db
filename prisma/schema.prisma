@@ -1,0 +1,3290 @@
+// ============================================================================
+// GymFlow — esquema OPERATIVO
+// ============================================================================
+// Este es el esquema que se MIGRA. Crece sprint a sprint hacia el modelo
+// objetivo documentado en /prisma/schema.prisma (artefacto de diseño de la
+// fase de Discovery, que NO se migra).
+//
+// Alcance actual: SPRINT 3 — + motor de membresías y paquetes de visitas.
+//
+// Constraints que Prisma no expresa de forma declarativa (índices parciales,
+// CHECK, REVOKE) viven en migrations/*/constraints.sql y están marcados aquí
+// con "-- SQL:". NO son opcionales: son garantías estructurales.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: las URLs ya NO viven aquí.
+  //   · migraciones  -> prisma.config.ts  (rol gymflow_owner, propietario)
+  //   · runtime      -> driver adapter    (rol gymflow_app, NO propietario)
+  // Esa separación es lo que hace efectivos el REVOKE DELETE y el RLS de fase 2.
+}
+
+enum MemberStatus {
+  PROSPECT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+/// Solo RECURRING genera ciclos de facturación (ADR-024).
+enum BillingModel {
+  RECURRING
+  PREPAID_PERIOD
+  VISIT_PACK
+  DAY_PASS
+}
+
+enum DurationUnit {
+  DAY
+  WEEK
+  MONTH
+  VISIT
+}
+
+/// Resuelve el acceso multi-sucursal en el PLAN, sin inventar un motor de
+/// reglas (§11.2).
+enum BranchAccessScope {
+  HOME_BRANCH
+  LISTED_BRANCHES
+  ALL_BRANCHES
+}
+
+enum MembershipStatus {
+  PENDING
+  TRIALING
+  ACTIVE
+  /// Dentro de la gracia: SÍ otorga acceso, intencionalmente (ADR-012).
+  PAST_DUE
+  /// Congelamiento acordado: EXTIENDE el periodo.
+  FROZEN
+  /// Por mora: NO extiende nada. El socio perdió esos días.
+  SUSPENDED
+  CANCELED
+  EXPIRED
+}
+
+enum MembershipEventType {
+  CREATED
+  ACTIVATED
+  TRIAL_STARTED
+  FROZEN
+  UNFROZEN
+  PLAN_CHANGED
+  RENEWED
+  PAST_DUE
+  SUSPENDED
+  REACTIVATED
+  DEBT_RESUMED
+  DEBT_FORGIVEN
+  CANCELED
+  EXPIRED
+}
+
+enum VisitPackStatus {
+  PENDING_PAYMENT
+  ACTIVE
+  EXHAUSTED
+  EXPIRED
+  FROZEN
+}
+
+enum VisitLedgerEntryType {
+  PURCHASE
+  CONSUME
+  EXPIRE
+  ADJUST
+  REFUND
+}
+
+enum ProspectStatus {
+  NEW
+  CONTACTED
+  VISITED
+  TRIAL
+  CONVERTED
+  LOST
+}
+
+enum ConsentType {
+  PRIVACY_NOTICE
+  BIOMETRIC
+  RECURRING_CHARGE
+  MARKETING
+  HOUSE_RULES
+  HEALTH_DATA
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+  JOB
+  GATEWAY
+  MEMBER
+}
+
+/// EL TENANT (ADR-001). El socio pertenece a la Organization, nunca a una sucursal.
+model Organization {
+  id              String    @id @db.Uuid
+  legalName       String
+  tradeName       String
+  /// Branch.timezone la sobrescribe: México eliminó el horario de verano
+  /// SALVO en la franja fronteriza norte (ADR-006).
+  timezone        String    @default("America/Mexico_City")
+  defaultCurrency String    @default("MXN") @db.Char(3)
+  settings        Json      @default("{}")
+  /// Estado del SERVICIO, lo decide la plataforma (ADR-037): PENDING (dada de
+  /// alta, sin liberar), ACTIVE (en uso) o SUSPENDED. Fuera de ACTIVE nadie
+  /// de la marca entra: ni su personal ni sus socios.
+  serviceStatus   String    @default("ACTIVE")
+  activatedAt     DateTime? @db.Timestamptz(3)
+  suspendedAt     DateTime? @db.Timestamptz(3)
+  suspendedReason String?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt       DateTime? @db.Timestamptz(3)
+
+  /// A quién le llega el estado de cuenta de la plataforma.
+  billingEmail       String?
+  /// Plan de la plataforma contratado (ADR-039): paquete de módulos con su
+  /// precio mensual. NULL = contrato a la medida, módulo por módulo.
+  platformPlanId     String?                   @db.Uuid
+  platformPlan       PlatformPlan?             @relation(fields: [platformPlanId], references: [id])
+  branches           Branch[]
+  modules            OrganizationModule[]
+  entitlements       OrganizationEntitlement[]
+  platformInvoices   PlatformInvoice[]
+  memberImports      MemberImport[]
+  users              User[]
+  roles              Role[]
+  auditLogs          AuditLog[]
+  roleLimits         RoleLimitSet[]
+  members            Member[]
+  plans              Plan[]
+  charges            Charge[]
+  payments           Payment[]
+  billingCycles      BillingCycle[]
+  cashRegisters      CashRegister[]
+  products           Product[]
+  posSales           PosSale[]
+  gateways           AccessGateway[]
+  accessDecisions    AccessDecision[]
+  attendance         AttendanceEvent[]
+  credentials        MemberCredential[]
+  portalInvites      PortalInvite[]
+  portalSessions     MemberSession[]
+  consentDocs        ConsentDocument[]
+  intakes            MemberIntake[]
+  enrollments        BiometricEnrollment[]
+  classTypes         ClassType[]
+  classSettings      ClassSettings?
+  classPauses        ClassPause[]
+  paymentMethods     PaymentMethod[]
+  webhookEvents      WebhookEvent[]
+  exercises          Exercise[]
+  workoutTemplates   WorkoutTemplate[]
+  workoutAssignments WorkoutAssignment[]
+  memberNotices      MemberNotice[]
+  privacyRequests    PrivacyRequest[]
+  pushSubscriptions  PushSubscription[]
+  monthlyCloses      MonthlyClose[]
+  followUps          FollowUp[]
+  outboundMessages   OutboundMessage[]
+  prospectSources    ProspectSource[]
+  faceTemplates      FaceTemplate[]
+  faceMeasurements   FaceMeasurement[]
+
+  @@map("organizations")
+}
+
+model Branch {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  code           String
+  name           String
+  addressLine    String?
+  /// Nombre corto y ÚNICO entre todos los gimnasios para el enlace público del
+  /// alta (`/alta/demo-centro`). El código de sede se repite entre clientes,
+  /// así que no sirve para eso (UXB-14).
+  publicSlug     String?   @unique
+  /// Nullable = hereda la zona de la organización.
+  timezone       String?
+  /// Versión del padrón firmado. MONÓTONA: es lo que impide que un gateway
+  /// acepte un padrón anterior en el que un socio expulsado aún figuraba.
+  rosterVersion  BigInt    @default(0)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt      DateTime? @db.Timestamptz(3)
+
+  organization     Organization             @relation(fields: [organizationId], references: [id])
+  roleAssignments  RoleAssignment[]
+  homeMembers      Member[]                 @relation("MemberHomeBranch")
+  planAvailability PlanBranchAvailability[]
+  soldMemberships  Membership[]             @relation("MembershipSoldAt")
+  membershipAccess MembershipBranchAccess[]
+  charges          Charge[]                 @relation("ChargeBranch")
+  payments         Payment[]                @relation("PaymentBranch")
+  cashRegisters    CashRegister[]
+  cashSessions     CashSession[]            @relation("CashSessionBranch")
+  posSales         PosSale[]                @relation("PosSaleBranch")
+  inventoryStock   InventoryStock[]
+  inventoryMoves   InventoryMovement[]
+  gateways         AccessGateway[]
+  accessDecisions  AccessDecision[]         @relation("AccessDecisionBranch")
+  attendance       AttendanceEvent[]        @relation("AttendanceBranch")
+  intakes          MemberIntake[]           @relation("IntakeBranch")
+  enrollments      BiometricEnrollment[]    @relation("EnrollmentBranch")
+  classTemplates   ClassTemplate[]          @relation("ClassTemplateBranch")
+  classSchedules   ClassSchedule[]          @relation("ClassScheduleBranch")
+  classPauses      ClassPause[]             @relation("ClassPauseBranch")
+
+  /// Soporte de las FKs compuestas que impiden cruzar tenants (ADR-001).
+  moduleOverrides BranchModuleOverride[]
+
+  @@unique([id, organizationId], map: "branches_id_org_key")
+  // -- SQL: UNIQUE (organization_id, code) WHERE deleted_at IS NULL
+  @@index([organizationId, isActive])
+  @@map("branches")
+}
+
+/// Cuenta de acceso del PERSONAL. Un socio NO es un User (ADR-023).
+model User {
+  id                    String    @id @db.Uuid
+  /// Nullable SOLO para el superadmin de plataforma (cross-tenant).
+  organizationId        String?   @db.Uuid
+  email                 String
+  passwordHash          String
+  fullName              String
+  phoneE164             String?
+  mfaEnabled            Boolean   @default(false)
+  isActive              Boolean   @default(true)
+  lastLoginAt           DateTime? @db.Timestamptz(3)
+  failedLogins          Int       @default(0)
+  /// Bloqueo temporal progresivo tras N fallos (§27).
+  lockedUntil           DateTime? @db.Timestamptz(3)
+  /// La contraseña la puso otra persona (alta o restablecimiento): se cambia
+  /// al entrar y, mientras tanto, no sirve para autorizar (SEC2-08).
+  mustChangePassword    Boolean   @default(false)
+  /// Secciones de Dirección y Cumplimiento que el dueño le liberó (claves de
+  /// `LOCKABLE_SECTIONS`). Vacío = ninguna. El dueño no la necesita.
+  unlockedSections      Json      @default("[]")
+  /// Lo que la PLATAFORMA deja ver al dueño; null = todo. Mismas claves que la llave.
+  platformSections      Json?
+  /// Ajustes de permisos de esta persona sobre su puesto: { add, remove }, de
+  /// la lista cerrada `ADJUSTABLE_PERMISSIONS`. null = exactamente su puesto.
+  permissionOverrides   Json?
+  passwordResetAt       DateTime? @db.Timestamptz(3)
+  passwordResetByUserId String?   @db.Uuid
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt             DateTime? @db.Timestamptz(3)
+
+  organization      Organization?      @relation(fields: [organizationId], references: [id])
+  roleAssignments   RoleAssignment[]   @relation("AssignmentUser")
+  grantedRoles      RoleAssignment[]   @relation("AssignmentGrantedBy")
+  sociosComoCoach   Member[]           @relation("MemberCoach")
+  sessions          Session[]
+  mfaFactors        MfaFactor[]
+  auditLogs         AuditLog[]         @relation("AuditActor")
+  pushSubscriptions PushSubscription[]
+
+  @@unique([id, organizationId], map: "users_id_org_key")
+  // -- SQL: UNIQUE (organization_id, lower(email)) WHERE deleted_at IS NULL
+  @@index([organizationId, isActive])
+  @@map("users")
+}
+
+model Role {
+  id             String  @id @db.Uuid
+  /// NULL = rol de sistema, compartido por todas las organizaciones.
+  organizationId String? @db.Uuid
+  key            String
+  name           String
+  isSystem       Boolean @default(false)
+
+  organization Organization?    @relation(fields: [organizationId], references: [id])
+  permissions  RolePermission[]
+  assignments  RoleAssignment[]
+  limits       RoleLimitSet[]
+
+  @@unique([organizationId, key])
+  @@map("roles")
+}
+
+/// Catálogo GLOBAL de la plataforma: deliberadamente SIN organizationId.
+model Permission {
+  key              String  @id
+  domain           String
+  description      String
+  requiresReason   Boolean @default(false)
+  requiresApproval Boolean @default(false)
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId        String @db.Uuid
+  permissionKey String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@id([roleId, permissionKey])
+  @@map("role_permissions")
+}
+
+/// EL MECANISMO DE SCOPING (ADR-009).
+/// branchId NULL = alcance organizacional. Un gerente que cubre dos sedes
+/// tiene dos filas.
+model RoleAssignment {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  userId          String    @db.Uuid
+  roleId          String    @db.Uuid
+  branchId        String?   @db.Uuid
+  grantedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  grantedByUserId String?   @db.Uuid
+  revokedAt       DateTime? @db.Timestamptz(3)
+
+  /// Relaciones COMPUESTAS: la base rechaza ligar un usuario o una sucursal
+  /// de otra organización. Es el control nº3 de ADR-001, y se declara aquí
+  /// —no en SQL crudo— para que Prisma no lo trate como deriva.
+  user      User    @relation("AssignmentUser", fields: [userId, organizationId], references: [id, organizationId], map: "role_assignments_user_same_org_fk")
+  grantedBy User?   @relation("AssignmentGrantedBy", fields: [grantedByUserId], references: [id])
+  role      Role    @relation(fields: [roleId], references: [id])
+  branch    Branch? @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "role_assignments_branch_same_org_fk")
+
+  // -- SQL: UNIQUE (user_id, role_id, COALESCE(branch_id, '00000000-...'))
+  //         WHERE revoked_at IS NULL
+  @@index([organizationId, userId, revokedAt])
+  @@map("role_assignments")
+}
+
+/// Límites cuantitativos por rol y organización (ADR-009).
+/// NULL = sin límite. Viven en configuración, NUNCA en el código.
+model RoleLimitSet {
+  id             String @id @db.Uuid
+  organizationId String @db.Uuid
+  roleId         String @db.Uuid
+
+  maxDiscountPercent            Int?
+  maxWaiverAmountCents          BigInt?
+  maxManualBalanceAdjustCents   BigInt?
+  maxCashWithdrawalCents        BigInt?
+  maxRefundAmountCents          BigInt?
+  /// Se ALERTA al excederlo, jamás se bloquea: si el sistema impidiera dejar
+  /// entrar a alguien, recepción se lo saltaría y el dato se perdería.
+  maxManualAccessGrantsPerShift Int?
+  maxPosVoidsPerShift           Int?
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  role         Role         @relation(fields: [roleId], references: [id])
+
+  @@unique([organizationId, roleId])
+  @@map("role_limit_sets")
+}
+
+/// Sesión OPACA del lado del servidor (ADR-008). No JWT: revocar es borrar
+/// una fila y surte efecto en la siguiente petición.
+/// Autorización de un SEGUNDO usuario (maker-checker), de un solo uso.
+///
+/// Antes bastaba con mandar el id del aprobador: nadie comprobaba que esa
+/// persona estuviera ahí. Ahora el aprobador teclea su contraseña (y su
+/// código 2FA si lo tiene) y recibe un token atado al permiso, a quien lo
+/// pidió y a cinco minutos. Solo se guarda su sha256.
+model ApprovalGrant {
+  id                String    @id @db.Uuid
+  organizationId    String    @db.Uuid
+  approverUserId    String    @db.Uuid
+  requestedByUserId String    @db.Uuid
+  permission        String
+  tokenHash         String    @unique
+  /// A QUÉ se autorizó (SEC2-05): la sede, el recurso y el importe. Una firma
+  /// para "reembolsar $300 de este pago" no sirve para $30,000 de otro.
+  branchId          String?   @db.Uuid
+  resourceType      String?
+  resourceId        String?   @db.Uuid
+  amountCents       BigInt?
+  expiresAt         DateTime  @db.Timestamptz(3)
+  usedAt            DateTime? @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([organizationId, approverUserId, createdAt])
+  @@map("approval_grants")
+}
+
+/// AUTORIZACIÓN A DISTANCIA: quien opera pide la firma y quien puede darla
+/// la aprueba desde su propio teléfono, con su contraseña.
+/// Aprobada, se emite una `ApprovalGrant` atada a la misma operación e
+/// importe; su token viaja cifrado aquí y se le entrega a quien la pidió
+/// mientras la firma no se use ni venza; después se borra (29-03).
+model ApprovalRequest {
+  id                String    @id @db.Uuid
+  organizationId    String    @db.Uuid
+  requestedByUserId String    @db.Uuid
+  permission        String
+  branchId          String?   @db.Uuid
+  resourceType      String?
+  resourceId        String?   @db.Uuid
+  amountCents       BigInt?
+  /// Lo que verá quien autoriza: "Reembolso de $300 a Ana López".
+  summary           String
+  /// El motivo que escribió quien pide: quien firma lo lee antes de decidir (UXG-05).
+  reason            String?
+  status            String    @default("PENDING")
+  approverUserId    String?   @db.Uuid
+  decidedAt         DateTime? @db.Timestamptz(3)
+  rejectReason      String?
+  /// Token de la firma, CIFRADO, mientras la firma no se use ni venza: si se
+  /// pierde la respuesta que lo trae, se vuelve a entregar (29-03).
+  deliveryToken     String?
+  /// La firma que emitió al aprobarse: dice si ya se usó o venció (29-03).
+  grantId           String?   @db.Uuid
+  /// A cuántos teléfonos salió el aviso al pedirla (29-05, bloque 2.10).
+  notifiedCount     Int       @default(0)
+  /// Cuándo salió ese aviso; null si no salió ninguno.
+  deliveredAt       DateTime? @db.Timestamptz(3)
+  /// La primera vez que la bandeja de alguien que puede firmarla la mostró (29-05).
+  seenAt            DateTime? @db.Timestamptz(3)
+  expiresAt         DateTime  @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([organizationId, status, expiresAt])
+  @@index([organizationId, createdAt])
+  @@map("approval_requests")
+}
+
+/// ESCALERA DE FALLOS DE LA SEGUNDA FIRMA (24-11, D24-04), aparte del bloqueo
+/// del inicio de sesión. Una fila por persona que alguna vez falló una firma:
+/// al 3.er fallo en 10 minutos se le avisa; al 5.º sus firmas quedan en pausa
+/// 10 minutos y se avisa a la dueña. Su entrada al panel no se toca.
+model ApprovalSignerLock {
+  userId          String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  failedCount     Int       @default(0)
+  /// Primer fallo de la ventana de 10 minutos en curso.
+  windowStartedAt DateTime? @db.Timestamptz(3)
+  pausedUntil     DateTime? @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([organizationId])
+  @@map("approval_signer_locks")
+}
+
+/// MÓDULOS que el gimnasio encendió o apagó a mano (ADR-036).
+///
+/// Sin fila = el valor por omisión del catálogo de `@gymflow/core`: un
+/// gimnasio que nunca tocó nada, y un módulo que nazca mañana, no necesitan
+/// relleno. La clave se valida contra el catálogo en el backend, no con un
+/// enum aquí, para no migrar cada vez que nazca un módulo.
+/// Apagar no borra nada: la fila queda como rastro y se vuelve a encender.
+model OrganizationModule {
+  organizationId  String   @db.Uuid
+  moduleKey       String
+  enabled         Boolean
+  /// Por qué se apagó: lo lee quien llega a la sección y la encuentra apagada.
+  reason          String?
+  updatedAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedByUserId String?  @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@id([organizationId, moduleKey])
+  @@map("organization_modules")
+}
+
+/// CORRIDAS DE LOS JOBS (auditoría 8, fase 1, bloque 1.16; 28-15). Una fila
+/// por corrida del cierre diario (`runner` = DAILY) o del corredor de 15
+/// minutos (FREQUENT). El candado es el índice único parcial sobre `runner`
+/// con `status` RUNNING (en la migración, a mano): dos corridas del mismo
+/// corredor no arrancan juntas. `heartbeatAt` lo refresca el proceso cada 30 s;
+/// una corrida RUNNING sin señal de vida se da por ABANDONED en la siguiente,
+/// con sus pasos a medias. No es append-only: el corredor de 15 minutos borra
+/// los pasos que no encontraron nada que hacer, y el cierre diario purga las
+/// corridas frecuentes vacías de más de una semana.
+model JobRun {
+  id          String    @id @db.Uuid
+  /// DAILY (cierre diario) o FREQUENT (cada 15 minutos).
+  runner      String
+  /// RUNNING, OK, WITH_ERRORS (errores por entidad), FAILED (un job reventó) o ABANDONED.
+  status      String
+  startedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  heartbeatAt DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt  DateTime? @db.Timestamptz(3)
+  /// Quién corrió: `host#pid`, para distinguir un cron de una corrida a mano.
+  host        String
+  /// Perfil de arranque (`uso-real`, `pruebas`) o null.
+  perfil      String?
+  /// Cifras de la corrida al cerrar: gimnasios, jobs, fallidos, saltados por «ya corrió hoy».
+  summary     Json?
+  /// Por qué quedó ABANDONED, o lo que haya que decir de la corrida.
+  note        String?
+
+  steps JobRunStep[]
+
+  @@index([runner, startedAt])
+  @@map("job_runs")
+}
+
+/// Un job en un gimnasio (o de plataforma: `organizationId` null) dentro de
+/// una corrida. `businessDate` es la fecha de negocio del gimnasio al correr
+/// (o la de CDMX para los de plataforma): con ella el cierre diario sabe que
+/// ese job ya corrió hoy y no lo repite. Segundo candado (migración
+/// `20261120100000_job_runs_candado_por_job`, a mano): un índice único parcial
+/// sobre (`job`, gimnasio) con `status` RUNNING impide que el mismo job corra
+/// a la vez para el mismo gimnasio desde el cierre diario y desde el corredor.
+model JobRunStep {
+  id             String    @id @db.Uuid
+  runId          String    @db.Uuid
+  organizationId String?   @db.Uuid
+  job            String
+  businessDate   DateTime  @db.Date
+  /// RUNNING, OK, WITH_ERRORS, FAILED o ABANDONED.
+  status         String
+  startedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt     DateTime? @db.Timestamptz(3)
+  processed      Int       @default(0)
+  skipped        Int       @default(0)
+  batches        Int       @default(0)
+  truncated      Boolean   @default(false)
+  /// `[{ entityId, error }]` del resultado del job.
+  errors         Json      @default("[]")
+  /// El mensaje si el job reventó (FAILED) o por qué se abandonó.
+  error          String?
+
+  run JobRun @relation(fields: [runId], references: [id])
+
+  @@index([organizationId, job, businessDate])
+  @@index([runId])
+  @@map("job_run_steps")
+}
+
+/// PRECIOS DE LA PLATAFORMA (ADR-038): cuánto cobra GymFlow al mes por cada
+/// módulo opcional y por lo básico (`core`). Los fija quien opera la
+/// plataforma; sin precio no se puede facturar. Un cambio no toca las
+/// facturas ya emitidas: cada una guarda sus líneas.
+/// Paquetes de módulos que la plataforma vende (ADR-039). Los define quien
+/// opera GymFlow: nombre, qué módulos incluye y cuánto cuesta al mes. Un
+/// gimnasio contrata un plan y, encima, módulos sueltos como agregados.
+model PlatformPlan {
+  id           String   @id @db.Uuid
+  name         String
+  description  String?
+  /// Claves de módulos OPCIONALES incluidos (`core` siempre va).
+  modules      Json     @default("[]")
+  /// NULL = sin precio fijado: se factura módulo por módulo.
+  monthlyCents BigInt?
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  organizations Organization[]
+
+  @@map("platform_plans")
+}
+
+model PlatformPrice {
+  moduleKey       String   @id
+  monthlyCents    BigInt
+  updatedAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedByUserId String?  @db.Uuid
+
+  @@map("platform_prices")
+}
+
+/// FACTURAS de la plataforma a cada marca (ADR-038): una por mes, con las
+/// líneas de lo contratado al emitirla y su precio de ese momento. Se paga
+/// o se anula; nunca se borra. Es un comprobante interno, no un CFDI.
+model PlatformInvoice {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  /// GF-2026-000012: correlativo por año, legible para el dueño.
+  folio           String    @unique
+  periodStart     DateTime  @db.Date
+  /// Exclusivo: el primer día del mes siguiente.
+  periodEnd       DateTime  @db.Date
+  /// [{ key, name, monthlyCents }]
+  lines           Json
+  totalCents      BigInt
+  status          String    @default("PENDING")
+  issuedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  dueDate         DateTime  @db.Date
+  paidAt          DateTime? @db.Timestamptz(3)
+  paymentMethod   String?
+  paymentRef      String?
+  note            String?
+  voidReason      String?
+  createdByUserId String?   @db.Uuid
+  /// Lo pagado hasta hoy: la suma de sus pagos vivos (bloque 1.13, 23-08).
+  /// `paidAt`, `paymentMethod` y `paymentRef` son los del último pago vivo.
+  paidCents       BigInt    @default(0)
+
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  payments     PlatformPayment[]
+
+  // -- SQL: UNIQUE (organizationId, periodStart) WHERE status <> 'VOID'
+  //         ^^^ una factura VIVA por mes y marca: la anulada no estorba para emitir otra (DP-03).
+  // -- SQL: CHECK (paidCents BETWEEN 0 AND totalCents); CHECK (status <> 'PAID' OR paidCents = totalCents)
+  @@index([organizationId, status])
+  @@index([status, dueDate])
+  @@map("platform_invoices")
+}
+
+/// PAGOS de una factura de la plataforma (auditoría 8, bloque 1.13; 23-07 y
+/// 23-08): uno por abono, con su importe, su forma y su referencia. Un pago
+/// registrado por error se DESHACE con motivo (`undoneAt`); nunca se borra.
+model PlatformPayment {
+  id              String    @id @db.Uuid
+  invoiceId       String    @db.Uuid
+  organizationId  String    @db.Uuid
+  amountCents     BigInt
+  paymentMethod   String
+  paymentRef      String?
+  /// El día en que llegó el dinero (calendario de la Ciudad de México), sin hora: nadie la captura (23-15).
+  paidOn          DateTime  @db.Date
+  note            String?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  createdByUserId String?   @db.Uuid
+  undoneAt        DateTime? @db.Timestamptz(3)
+  undoneByUserId  String?   @db.Uuid
+  undoReason      String?
+
+  invoice PlatformInvoice @relation(fields: [invoiceId], references: [id])
+
+  // -- SQL: CHECK (amountCents > 0); REVOKE DELETE ON platform_payments FROM gymflow_app
+  @@index([invoiceId, createdAt])
+  @@map("platform_payments")
+}
+
+/// MÓDULOS CONTRATADOS por la marca: lo decide la PLATAFORMA (ADR-037). La
+/// gerencia enciende y apaga solo dentro de lo contratado. Sin fila, el
+/// módulo cuenta como contratado: así las marcas que ya existían no cambian;
+/// la plataforma marca explícitamente lo que NO está contratado.
+model OrganizationEntitlement {
+  organizationId  String   @db.Uuid
+  moduleKey       String
+  granted         Boolean
+  reason          String?
+  updatedAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedByUserId String?  @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@id([organizationId, moduleKey])
+  @@map("organization_entitlements")
+}
+
+/// Lo que UNA SUCURSAL dejó de usar aunque el gimnasio lo tenga encendido
+/// (ADR-036): una sede sin salón de clases, una sin tienda. Solo apaga; una
+/// sede nunca enciende lo que el gimnasio tiene apagado. Una fila con
+/// `enabled = true` vale lo mismo que ninguna: queda como rastro.
+model BranchModuleOverride {
+  organizationId  String   @db.Uuid
+  branchId        String   @db.Uuid
+  moduleKey       String
+  enabled         Boolean
+  reason          String?
+  updatedAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedByUserId String?  @db.Uuid
+
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "branch_module_overrides_branch_same_org_fk")
+
+  @@id([branchId, moduleKey])
+  @@index([organizationId])
+  @@map("branch_module_overrides")
+}
+
+/// GASTOS FIJOS del gimnasio: renta, nómina, luz. Sin ellos "ganancia" era
+/// solo caja (UXB-02). Se registran por mes; no se borran, se anulan.
+model OperatingExpense {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  /// null = de todo el gimnasio (la nómina de oficina, el software).
+  branchId        String?   @db.Uuid
+  category        String
+  description     String
+  amountCents     BigInt
+  /// Primer día del mes al que corresponde.
+  periodMonth     DateTime  @db.Date
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  voidedAt        DateTime? @db.Timestamptz(3)
+  voidedByUserId  String?   @db.Uuid
+  voidReason      String?
+
+  @@index([organizationId, periodMonth])
+  @@map("operating_expenses")
+}
+
+model Session {
+  id             String    @id @db.Uuid
+  organizationId String?   @db.Uuid
+  userId         String    @db.Uuid
+  /// sha256 del identificador opaco de 256 bits. El valor en claro solo
+  /// existe en la cookie del cliente.
+  tokenHash      String    @unique
+  deviceLabel    String?
+  ip             String?
+  userAgent      String?
+  /// Contexto de UI, NO propiedad de datos.
+  activeBranchId String?   @db.Uuid
+  /// Se eleva tras superar el 2FA; hasta entonces la sesión es parcial.
+  mfaSatisfied   Boolean   @default(false)
+  /// Reconfirmación con el segundo factor para acciones críticas de plataforma.
+  stepUpUntil    DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastSeenAt     DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt      DateTime  @db.Timestamptz(3)
+  revokedAt      DateTime? @db.Timestamptz(3)
+  revokedReason  String?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model MfaFactor {
+  id              String    @id @db.Uuid
+  userId          String    @db.Uuid
+  type            String    @default("TOTP")
+  /// Cifrado en reposo con MFA_ENCRYPTION_KEY (AES-256-GCM).
+  secretEncrypted String
+  confirmedAt     DateTime? @db.Timestamptz(3)
+  lastUsedCounter BigInt?
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("mfa_factors")
+}
+
+/// APPEND-ONLY. UPDATE y DELETE se REVOCAN al rol de aplicación en SQL:
+/// es una garantía, no una convención.
+model AuditLog {
+  id               String         @id @db.Uuid
+  organizationId   String         @db.Uuid
+  branchId         String?        @db.Uuid
+  actorUserId      String?        @db.Uuid
+  actorType        AuditActorType
+  action           String
+  resourceType     String
+  resourceId       String?        @db.Uuid
+  beforeState      Json?
+  afterState       Json?
+  /// OBLIGATORIO en acciones sensibles (§28). Se elige de catálogo.
+  reason           String?
+  approvedByUserId String?        @db.Uuid
+  ip               String?
+  userAgent        String?
+  sessionId        String?        @db.Uuid
+  requestId        String?
+  /// Cadena de hashes por organización: detecta edición o borrado directo
+  /// en la base de datos. Un job diario la verifica (ADR-018).
+  prevHash         String?
+  hash             String
+  at               DateTime       @default(now()) @db.Timestamptz(3)
+  businessDate     DateTime       @db.Date
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  actor        User?        @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  // -- SQL: REVOKE UPDATE, DELETE ON audit_logs FROM gymflow_app
+  /// Recupera el último eslabón de la cadena por organización.
+  @@index([organizationId, at(sort: Desc), id(sort: Desc)], map: "audit_logs_chain_tip_idx")
+  @@index([organizationId, at(sort: Desc)])
+  @@index([organizationId, resourceType, resourceId])
+  @@index([organizationId, actorUserId, businessDate])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// SPRINT 2 — SOCIOS, PROSPECTOS Y CATÁLOGO
+// ============================================================================
+
+/// El socio pertenece a la ORGANIZACIÓN (§11.1).
+/// `homeBranchId` es una PREFERENCIA: está PROHIBIDO usarlo para filtrar
+/// cartera o saldo. Es el mecanismo exacto por el que BDKGYM fragmenta al
+/// cliente, y existe aquí solo para reportes y asignación de coach.
+model Member {
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  memberCode     String
+  homeBranchId   String? @db.Uuid
+  /// Coach asignado: el coach ve solo a sus socios (2026-10-09).
+  coachUserId    String? @db.Uuid
+
+  firstName String
+  lastName  String
+  /// Clave normalizada (mayúsculas, sin acentos, tokens ordenados).
+  /// Denormalizada a propósito: neutraliza apellidos invertidos y permite
+  /// buscar sin recalcular en cada consulta.
+  nameKey   String
+
+  phoneE164      String?
+  email          String?
+  birthDate      DateTime? @db.Date
+  curp           String?
+  photoObjectKey String?
+  notes          String?
+
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  /// Dato SENSIBLE. Solo se guarda si el socio aceptó HEALTH_DATA, y solo lo
+  /// lee quien tiene `members:health:read` (coach y gerencia, no recepción).
+  healthNotes           String?
+
+  status MemberStatus @default(ACTIVE)
+
+  /// Derivado y cacheado SOLO para listados (ADR-005). Toda pantalla de
+  /// decisión financiera lee el derivado real; un job diario reconcilia.
+  balanceCentsCached BigInt    @default(0)
+  balanceComputedAt  DateTime? @db.Timestamptz(3)
+
+  /// Antigüedad del SOCIO, no de la membresía: sobrevive a bajas y altas.
+  joinedAt DateTime @db.Timestamptz(3)
+
+  /// Derecho de supresión (ARCO): se anonimiza la persona conservando el
+  /// movimiento contable. Retención POR TIPO DE DATO, no por fila.
+  anonymizedAt DateTime? @db.Timestamptz(3)
+
+  createdByUserId String?   @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt       DateTime? @db.Timestamptz(3)
+
+  organization       Organization          @relation(fields: [organizationId], references: [id])
+  homeBranch         Branch?               @relation("MemberHomeBranch", fields: [homeBranchId, organizationId], references: [id, organizationId], map: "members_home_branch_same_org_fk")
+  coach              User?                 @relation("MemberCoach", fields: [coachUserId, organizationId], references: [id, organizationId], map: "members_coach_same_org_fk", onDelete: Restrict, onUpdate: Cascade)
+  consents           MemberConsent[]
+  fromProspect       Prospect?             @relation("ProspectConversion")
+  memberships        Membership[]
+  visitPacks         VisitPack[]
+  charges            Charge[]
+  payments           Payment[]
+  posSales           PosSale[]
+  accessDecisions    AccessDecision[]
+  attendance         AttendanceEvent[]
+  memberCredentials  MemberCredential[]
+  portalInvites      PortalInvite[]
+  memberSessions     MemberSession[]
+  /// Un exsocio que vuelve manda OTRA alta digital y se vincula a su ficha.
+  fromIntakes        MemberIntake[]        @relation("IntakeConversion")
+  legacyCodes        MemberLegacyCode[]
+  classBookings      ClassBooking[]
+  workoutAssignments WorkoutAssignment[]
+  bookingBlocks      ClassBookingBlock[]
+  paymentMethods     PaymentMethod[]
+  notices            MemberNotice[]
+  followUps          FollowUp[]
+  outboundMessages   OutboundMessage[]
+  privacyRequests    PrivacyRequest[]
+  enrollments        BiometricEnrollment[]
+
+  // -- SQL: UNIQUE (organizationId, memberCode) WHERE deletedAt IS NULL
+  // -- SQL: UNIQUE (organizationId, phoneE164) WHERE deletedAt IS NULL AND phoneE164 IS NOT NULL
+  @@unique([id, organizationId], map: "members_id_org_key")
+  /// Búsqueda de recepción con errores de captura. Se declara aquí, NO en SQL
+  /// crudo: Prisma reconoce los índices GIN y los borraría como deriva.
+  @@index([nameKey(ops: raw("gin_trgm_ops"))], type: Gin, map: "members_name_trgm_idx")
+  @@index([memberCode(ops: raw("gin_trgm_ops"))], type: Gin, map: "members_code_trgm_idx")
+  @@index([organizationId, status, homeBranchId])
+  @@index([organizationId, joinedAt])
+  @@map("members")
+}
+
+/// Evidencia de consentimiento VERSIONADA.
+/// Hay que poder demostrar quién aceptó QUÉ VERSIÓN y cuándo, mucho más allá
+/// de los ~135 días de la ventana real de contracargo (docs/07 §9.2).
+model MemberConsent {
+  id               String      @id @db.Uuid
+  organizationId   String      @db.Uuid
+  memberId         String      @db.Uuid
+  branchId         String?     @db.Uuid
+  consentType      ConsentType
+  documentVersion  String
+  /// Texto exacto que se mostró al socio. Sin esto, la evidencia es una
+  /// afirmación, no una prueba.
+  documentText     String?
+  granted          Boolean
+  grantedAt        DateTime    @db.Timestamptz(3)
+  revokedAt        DateTime?   @db.Timestamptz(3)
+  ip               String?
+  userAgent        String?
+  channel          String?
+  assistedByUserId String?     @db.Uuid
+  evidenceHash     String?
+
+  member         Member                @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "member_consents_member_same_org_fk")
+  paymentMethods PaymentMethod[]
+  enrollments    BiometricEnrollment[]
+
+  @@index([organizationId, memberId, consentType, grantedAt(sort: Desc)])
+  @@map("member_consents")
+}
+
+/// El prospecto SÍ nace en una sucursal: es atribución comercial de la venta.
+model Prospect {
+  id                String         @id @db.Uuid
+  organizationId    String         @db.Uuid
+  branchId          String         @db.Uuid
+  firstName         String
+  lastName          String
+  nameKey           String
+  phoneE164         String?
+  email             String?
+  source            String?
+  status            ProspectStatus @default(NEW)
+  assignedToUserId  String?        @db.Uuid
+  /// Al convertirse queda ligado al socio: así se mide la conversión real.
+  convertedMemberId String?        @unique @db.Uuid
+  convertedAt       DateTime?      @db.Timestamptz(3)
+  notes             String?
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime       @updatedAt @db.Timestamptz(3)
+
+  /// Bandeja (auditoría 8, bloque 2.4). `status` es la ETAPA DERIVADA de los
+  /// contactos (`deriveStage` del núcleo): nadie la elige a mano. Lo que sigue
+  /// se guarda junto al interesado para ordenar y paginar la bandeja en SQL.
+  /// Cuándo fue su último contacto (cualquier resultado).
+  lastContactAt      DateTime? @db.Timestamptz(3)
+  /// El próximo paso con fecha; null = no tiene.
+  nextStepOn         DateTime? @db.Date
+  /// Desde qué día toca (`dueOn` del núcleo): el próximo paso o, si fue
+  /// contactado y no lo tiene, el día del último contacto. Null = sin contactar.
+  dueOn              DateTime? @db.Date
+  /// «¿Quién lo recomendó?»: un socio, o solo su nombre.
+  referredByMemberId String?   @db.Uuid
+  referredByName     String?
+  /// Por qué se cerró sin inscribirse (catálogo `interesadoPerdido`), cuándo y quién.
+  lostReasonCode     String?
+  lostReason         String?
+  closedAt           DateTime? @db.Timestamptz(3)
+  closedByUserId     String?   @db.Uuid
+
+  convertedMember Member?    @relation("ProspectConversion", fields: [convertedMemberId], references: [id])
+  followUps       FollowUp[]
+
+  @@index([nameKey(ops: raw("gin_trgm_ops"))], type: Gin, map: "prospects_name_trgm_idx")
+  @@index([organizationId, branchId, status, createdAt(sort: Desc)])
+  @@index([organizationId, status, dueOn], map: "prospects_org_status_due_idx")
+  @@index([organizationId, phoneE164], map: "prospects_org_phone_idx")
+  @@map("prospects")
+}
+
+/// «¿Cómo se enteró?» (bloque 2.4, 10-17): la lista que arma la gerencia. Un
+/// gimnasio sin filas usa las de fábrica (`DEFAULT_PROSPECT_SOURCES`).
+model ProspectSource {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  position       Int      @default(0)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, name], map: "prospect_sources_org_name_key")
+  @@map("prospect_sources")
+}
+
+/// Catálogo de la ORGANIZACIÓN (§25). La variación por sucursal se modela
+/// aparte, NO duplicando el plan.
+model Plan {
+  id             String       @id @db.Uuid
+  organizationId String       @db.Uuid
+  code           String
+  name           String
+  description    String?
+  billingModel   BillingModel
+  durationUnit   DurationUnit
+  durationValue  Int
+
+  /// Precio que paga el socio, en CENTAVOS (ADR-005).
+  priceCents     BigInt
+  signupFeeCents BigInt @default(0)
+  currency       String @default("MXN") @db.Char(3)
+
+  /// Desglose fiscal. PENDIENTE Q-B-04: no se sabe si los precios son con
+  /// IVA incluido ni si las cuotas causan IVA. Se modela paramétrico para
+  /// que la respuesta NO obligue a migrar datos:
+  ///   · taxRateBps = null  -> no se desglosa (realidad de hoy)
+  ///   · priceIncludesTax   -> decide si el impuesto se resta o se suma
+  taxRateBps       Int?
+  priceIncludesTax Boolean @default(true)
+
+  branchAccessScope BranchAccessScope @default(ALL_BRANCHES)
+  accessTimeWindows Json?
+
+  /// Solo para billingModel = VISIT_PACK
+  visitsIncluded    Int?
+  visitValidityDays Int?
+
+  /// ¿La cuota incluye las clases con cupo, o cada una se paga aparte?
+  /// Falso por defecto a propósito: regalar clases por omisión es un error
+  /// que solo se descubre al cuadrar el mes.
+  includesClasses      Boolean  @default(false)
+  /// Con `includesClasses`: cuáles. Vacío = todas las que se pueden incluir
+  /// en un plan (`ClassType.includableInPlans`). 2026-10-09.
+  includedClassTypeIds String[] @default([]) @db.Uuid
+
+  defaultGraceDays     Int     @default(5)
+  allowFreeze          Boolean @default(true)
+  maxFreezeDaysPerYear Int     @default(30)
+  minFreezeDays        Int     @default(7)
+  autoRenewDefault     Boolean @default(true)
+
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  organization       Organization             @relation(fields: [organizationId], references: [id])
+  branchAvailability PlanBranchAvailability[]
+  memberships        Membership[]
+
+  // -- SQL: UNIQUE (organizationId, code) WHERE deletedAt IS NULL
+  @@unique([id, organizationId], map: "plans_id_org_key")
+  // -- SQL: CHECK de coherencia entre billingModel y los campos de visitas
+  @@index([organizationId, isActive, billingModel])
+  @@map("plans")
+}
+
+/// EXCEPCIÓN DOCUMENTADA (§25): precio y disponibilidad por sucursal sin
+/// fragmentar el catálogo en un plan por sede.
+model PlanBranchAvailability {
+  planId             String  @db.Uuid
+  branchId           String  @db.Uuid
+  organizationId     String  @db.Uuid
+  isAvailable        Boolean @default(true)
+  priceOverrideCents BigInt?
+
+  plan   Plan   @relation(fields: [planId, organizationId], references: [id, organizationId], map: "pba_plan_same_org_fk")
+  branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "pba_branch_same_org_fk")
+
+  @@id([planId, branchId])
+  @@index([organizationId, branchId])
+  @@map("plan_branch_availability")
+}
+
+/// Contador del código legible de socio, por sucursal.
+/// Tabla en vez de secuencia de PostgreSQL: el contador debe poder
+/// reiniciarse o ajustarse tras la migración de BDKGYM sin tocar DDL.
+/// Contador de códigos de socio.
+///
+/// Indexado por PREFIJO, no por sucursal. La unicidad del código de socio es
+/// `(organización, código)`, y el código es `PREFIJO-NNNNN`: si el contador
+/// fuera por sucursal, dos sedes que comparten prefijo emitirían el mismo
+/// código, y archivar una sede y reutilizar su prefijo chocaría contra los
+/// códigos que esa sede ya emitió. El contador tiene que vivir en el mismo
+/// espacio que la unicidad que protege.
+model MemberCodeCounter {
+  organizationId String   @db.Uuid
+  /// Las tres primeras letras del código de sucursal.
+  prefix         String   @db.VarChar(3)
+  lastSequence   Int      @default(0)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([organizationId, prefix])
+  @@map("member_code_counters")
+}
+
+// ============================================================================
+// SPRINT 3 — MOTOR DE MEMBRESÍAS
+// ============================================================================
+
+/// Contrato vigente socio↔plan. NUNCA se confunde con el socio (§15):
+/// un socio puede existir sin membresía activa, y eso es lo que permite
+/// conservar expediente, historial y saldo tras una baja.
+model Membership {
+  id             String           @id @db.Uuid
+  organizationId String           @db.Uuid
+  memberId       String           @db.Uuid
+  planId         String           @db.Uuid
+  /// Atribución de VENTA. No condiciona dónde entra ni dónde paga.
+  soldAtBranchId String?          @db.Uuid
+  status         MembershipStatus @default(PENDING)
+
+  startDate          DateTime  @db.Date
+  /// Intervalo SEMIABIERTO [start, end): el fin de un periodo ES el inicio
+  /// del siguiente. Sin días duplicados ni huecos.
+  currentPeriodStart DateTime  @db.Date
+  currentPeriodEnd   DateTime  @db.Date
+  /// Ancla 1..31 fijada en el alta. NUNCA se recalcula desde la fecha
+  /// efectiva anterior: eso produce deriva irreversible (ADR-006).
+  billingAnchorDay   Int
+  graceUntil         DateTime? @db.Date
+
+  autoRenew Boolean @default(true)
+
+  /// Cupo de congelamiento consumido en el año natural en curso.
+  frozenDaysUsedThisYear Int       @default(0)
+  frozenDaysUsedYear     Int?
+  frozenSince            DateTime? @db.Date
+  frozenUntil            DateTime? @db.Date
+
+  /// CANCELED y EXPIRED son terminales: reactivar crea una membresía NUEVA,
+  /// enlazada aquí. La antigüedad vive en Member.joinedAt, no en la membresía.
+  replacesMembershipId String? @unique @db.Uuid
+
+  canceledAt         DateTime? @db.Timestamptz(3)
+  cancellationReason String?
+  endedAt            DateTime? @db.Timestamptz(3)
+
+  /// Clave de la VENTA que la creó (DM-08): el reintento de un mostrador con
+  /// la red caída devuelve la misma venta en vez de "ya tiene una vigente".
+  saleKey          String?
+  /// Precio pactado al vender (DM-05): las cuotas se cobran a este precio, no al de lista de hoy.
+  agreedPriceCents BigInt?
+
+  createdByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  member       Member                   @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "memberships_member_same_org_fk")
+  plan         Plan                     @relation(fields: [planId, organizationId], references: [id, organizationId], map: "memberships_plan_same_org_fk")
+  soldAtBranch Branch?                  @relation("MembershipSoldAt", fields: [soldAtBranchId, organizationId], references: [id, organizationId], map: "memberships_branch_same_org_fk")
+  replaces     Membership?              @relation("MembershipChain", fields: [replacesMembershipId], references: [id])
+  replacedBy   Membership?              @relation("MembershipChain")
+  branchAccess MembershipBranchAccess[]
+  events       MembershipEvent[]
+  charges      Charge[]
+
+  @@unique([id, organizationId], map: "memberships_id_org_key")
+  @@unique([organizationId, saleKey], map: "memberships_org_salekey_key")
+  // -- SQL: UNIQUE (memberId) WHERE status IN ('PENDING','TRIALING','ACTIVE','PAST_DUE','FROZEN')
+  //         ^^^ CRÍTICO: una sola membresía vigente por socio.
+  // -- SQL: CHECK (billingAnchorDay BETWEEN 1 AND 31)
+  // -- SQL: CHECK (currentPeriodEnd > currentPeriodStart)
+  @@index([organizationId, status, currentPeriodEnd])
+  @@index([organizationId, memberId, startDate(sort: Desc)])
+  @@index([organizationId, status, graceUntil])
+  @@map("memberships")
+}
+
+/// Qué sucursales habilita esta membresía cuando el plan usa LISTED_BRANCHES.
+model MembershipBranchAccess {
+  membershipId   String @db.Uuid
+  branchId       String @db.Uuid
+  organizationId String @db.Uuid
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  branch     Branch     @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "mba_branch_same_org_fk")
+
+  @@id([membershipId, branchId])
+  @@index([organizationId, branchId])
+  @@map("membership_branch_access")
+}
+
+/// Bitácora de transiciones. Append-only: es la historia del contrato.
+model MembershipEvent {
+  id             String              @id @db.Uuid
+  organizationId String              @db.Uuid
+  membershipId   String              @db.Uuid
+  branchId       String?             @db.Uuid
+  eventType      MembershipEventType
+  fromStatus     MembershipStatus?
+  toStatus       MembershipStatus
+  payload        Json                @default("{}")
+  actorUserId    String?             @db.Uuid
+  reason         String?
+  at             DateTime            @default(now()) @db.Timestamptz(3)
+  businessDate   DateTime            @db.Date
+
+  membership Membership @relation(fields: [membershipId], references: [id])
+
+  @@index([organizationId, membershipId, at(sort: Desc)])
+  @@map("membership_events")
+}
+
+/// Paquete de visitas prepagado: INGRESO DIFERIDO (ADR-024).
+/// Se cobra hoy y se consume después, así que no es ingreso el día del cobro.
+model VisitPack {
+  id              String          @id @db.Uuid
+  organizationId  String          @db.Uuid
+  memberId        String          @db.Uuid
+  planId          String?         @db.Uuid
+  soldAtBranchId  String?         @db.Uuid
+  visitsPurchased Int
+  purchasedOn     DateTime        @db.Date
+  expiresOn       DateTime?       @db.Date
+  status          VisitPackStatus @default(PENDING_PAYMENT)
+  /// La caducidad es un EVENTO CON FECHA, no una consulta: sin esto no hay
+  /// registro de cuándo ni cuánto se perdió, y el reconocimiento de ingreso
+  /// es imposible (ADR-024).
+  expiredAt       DateTime?       @db.Timestamptz(3)
+  /// Cargo que financió el paquete.
+  ///
+  /// Sin este enlace, el ingreso diferido sería una estimación: habría que
+  /// valorar la visita con el precio de lista del plan, que no es lo que el
+  /// socio pagó si hubo descuento o precio por sucursal. El reconocimiento de
+  /// ingreso exige el importe REAL (ADR-024).
+  chargeId        String?         @db.Uuid
+  createdByUserId String?         @db.Uuid
+  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
+
+  member  Member             @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "visit_packs_member_same_org_fk")
+  entries VisitLedgerEntry[]
+
+  @@unique([id, organizationId], map: "visit_packs_id_org_key")
+  @@unique([chargeId], map: "visit_packs_charge_key")
+  // -- SQL: CHECK (visitsPurchased > 0)
+  @@index([organizationId, memberId, status])
+  @@index([organizationId, status, expiresOn])
+  @@map("visit_packs")
+}
+
+/// LIBRO DE MOVIMIENTOS del saldo de visitas, nunca un contador mutable.
+/// Un contador que se decrementa no permite auditar por qué a un socio le
+/// faltan visitas; con libro, cada consumo tiene fecha, sucursal y origen.
+model VisitLedgerEntry {
+  id                String               @id @db.Uuid
+  organizationId    String               @db.Uuid
+  visitPackId       String               @db.Uuid
+  branchId          String?              @db.Uuid
+  /// Clave de idempotencia del consumo: el id de la ASISTENCIA que lo causó
+  /// (5-24, auditoría 8; hasta el 2026-11-18 se guardaba el de la decisión y
+  /// la migración `visita_con_id_de_asistencia` corrigió lo viejo). La llave
+  /// foránea contra AttendanceEvent queda pendiente; el índice único ya protege.
+  attendanceEventId String?              @db.Uuid
+  entryType         VisitLedgerEntryType
+  delta             Int
+  reason            String?
+  createdByUserId   String?              @db.Uuid
+  at                DateTime             @default(now()) @db.Timestamptz(3)
+  businessDate      DateTime             @db.Date
+
+  visitPack VisitPack @relation(fields: [visitPackId, organizationId], references: [id, organizationId], map: "vle_pack_same_org_fk")
+
+  // -- SQL: UNIQUE (visitPackId, attendanceEventId) WHERE attendanceEventId IS NOT NULL
+  //         ^^^ ANTI DOBLE CONSUMO: un doble paso del torniquete o una
+  //             resincronización offline consumirían dos visitas por una entrada.
+  // -- SQL: CHECK (delta <> 0)
+  // -- SQL: CHECK de coherencia entre entryType y el signo de delta
+  @@index([visitPackId, at])
+  @@map("visit_ledger_entries")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 4 · LIBRO FINANCIERO
+//
+// Dos entidades, nunca una sola: `Charge` es la OBLIGACIÓN y `Payment` es el
+// MOVIMIENTO DE DINERO. Se relacionan N:M porque la realidad del mostrador lo
+// es: un socio abona $200 a cuenta de dos mensualidades atrasadas, o paga de
+// un golpe el trimestre completo. Un booleano `paid` en el cargo haría
+// imposible representar cualquiera de los dos casos (ADR-011).
+// ════════════════════════════════════════════════════════════════════════════
+
+enum ChargeType {
+  MEMBERSHIP_PERIOD
+  SIGNUP_FEE
+  VISIT_PACK
+  DAY_PASS
+  CLASS_SINGLE
+  NO_SHOW_PENALTY
+  POS_SALE
+  PRORATION_ADJUSTMENT
+  OPENING_BALANCE
+  MANUAL_ADJUSTMENT
+}
+
+enum ChargeStatus {
+  DRAFT
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+  WRITTEN_OFF
+}
+
+enum PaymentMethodType {
+  CASH
+  CARD_TERMINAL
+  CARD_ON_FILE
+  SPEI_TRANSFER
+  OXXO_REF
+  CREDIT_NOTE
+}
+
+enum PaymentStatus {
+  INITIATED
+  PROCESSING
+  /// 3-D Secure pendiente: el socio tiene que autenticar.
+  REQUIRES_ACTION
+  SUCCEEDED
+  FAILED
+  /// Timeout sin respuesta. NO es un fallo: bloquea reintentos hasta
+  /// conciliar, y es lo único que impide el doble cobro (§11.6).
+  UNKNOWN
+  CANCELED
+  REVERSED
+}
+
+enum AdjustmentType {
+  DISCOUNT
+  WAIVER
+  LATE_FEE
+  CORRECTION
+}
+
+enum BillingCycleStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Ejecución del job de generación de cargos.
+///
+/// Existe para que una pregunta operativa tenga respuesta: "¿de dónde salió
+/// este cargo?". Sin esto, un cargo generado de más es indistinguible de uno
+/// capturado a mano, y no hay forma de auditar una corrida completa.
+model BillingCycle {
+  id             String             @id @db.Uuid
+  organizationId String             @db.Uuid
+  /// Fecha de negocio de la corrida en la zona de la organización.
+  runDate        DateTime           @db.Date
+  status         BillingCycleStatus @default(RUNNING)
+
+  chargesCreated Int    @default(0)
+  chargesSkipped Int    @default(0)
+  amountCents    BigInt @default(0)
+
+  startedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt DateTime? @db.Timestamptz(3)
+  error      String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  charges      Charge[]
+
+  @@unique([id, organizationId], map: "billing_cycles_id_org_key")
+  // -- SQL: UNIQUE (organizationId, runDate) WHERE status <> 'FAILED'
+  //         ^^^ Una sola corrida válida por día: reejecutar no duplica.
+  @@index([organizationId, runDate(sort: Desc)])
+  @@map("billing_cycles")
+}
+
+/// La OBLIGACIÓN. Cuelga del SOCIO, no de la membresía: un day pass, una venta
+/// de mostrador o un saldo migrado existen sin contrato vigente. Por eso
+/// `membershipId` es OPCIONAL, y por eso no se puede modelar como una columna
+/// dentro de `Membership`.
+model Charge {
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  memberId       String  @db.Uuid
+  /// Opcional A PROPÓSITO: ver el comentario del modelo.
+  membershipId   String? @db.Uuid
+  /// Dónde se originó. Necesario para el corte por sucursal.
+  branchId       String? @db.Uuid
+  billingCycleId String? @db.Uuid
+
+  chargeType ChargeType
+  status     ChargeStatus @default(OPEN)
+  concept    String
+
+  /// Todo en CENTAVOS (ADR-005). Jamás un float toca dinero.
+  subtotalCents BigInt
+  taxCents      BigInt @default(0)
+  discountCents BigInt @default(0)
+  /// = subtotal + impuesto − descuento. Garantizado por CHECK.
+  amountCents   BigInt
+  currency      String @default("MXN") @db.Char(3)
+
+  /// Mantenidos en la MISMA transacción que la asignación, no por un job:
+  /// el saldo de un cargo no puede ir por detrás de su cobro.
+  allocatedCents BigInt @default(0)
+  adjustedCents  BigInt @default(0)
+
+  /// Periodo que cubre el cargo, semiabierto [start, end) como la membresía.
+  periodStart DateTime? @db.Date
+  periodEnd   DateTime? @db.Date
+
+  issuedAt DateTime? @db.Timestamptz(3)
+  dueDate  DateTime  @db.Date
+
+  /// DETERMINISTA y derivada del dominio (no del reloj): es lo que hace que
+  /// reejecutar el job no duplique cargos. BullMQ es *at-least-once*.
+  idempotencyKey String?
+
+  voidedAt       DateTime? @db.Timestamptz(3)
+  voidReason     String?
+  writtenOffAt   DateTime? @db.Timestamptz(3)
+  writeOffReason String?
+
+  createdByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  member       Member              @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "charges_member_same_org_fk")
+  membership   Membership?         @relation(fields: [membershipId, organizationId], references: [id, organizationId], map: "charges_membership_same_org_fk")
+  branch       Branch?             @relation("ChargeBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "charges_branch_same_org_fk")
+  billingCycle BillingCycle?       @relation(fields: [billingCycleId, organizationId], references: [id, organizationId], map: "charges_cycle_same_org_fk")
+  allocations  PaymentAllocation[]
+  adjustments  ChargeAdjustment[]
+  posSale      PosSale?
+  classBooking ClassBooking?
+
+  @@unique([id, organizationId], map: "charges_id_org_key")
+  // -- SQL: UNIQUE (organizationId, idempotencyKey) WHERE idempotencyKey IS NOT NULL
+  //         ^^^ CRÍTICO: la barrera real contra cargos duplicados.
+  // -- SQL: CHECK (amountCents = subtotalCents + taxCents - discountCents)
+  // -- SQL: CHECK (subtotalCents >= 0 AND taxCents >= 0 AND discountCents >= 0 AND amountCents >= 0)
+  // -- SQL: CHECK (allocatedCents >= 0 AND adjustedCents >= 0)
+  // -- SQL: CHECK (allocatedCents + adjustedCents <= amountCents)
+  //         ^^^ Impide cobrar de más contra un cargo: el excedente DEBE
+  //             quedar como saldo a favor, nunca como cargo negativo.
+  // -- SQL: CHECK (periodEnd > periodStart)
+  // -- SQL: CHECK (chargeType = 'MEMBERSHIP_PERIOD' -> membershipId IS NOT NULL)
+  @@index([organizationId, memberId, dueDate(sort: Desc)])
+  @@index([organizationId, status, dueDate])
+  @@index([organizationId, branchId, createdAt(sort: Desc)])
+  @@index([membershipId, periodStart])
+  @@map("charges")
+}
+
+/// Modificación de una obligación SIN tocar el importe original.
+/// Append-only: un descuento aplicado y luego retirado deja dos asientos, no
+/// un `UPDATE` que borra la huella de quién lo autorizó.
+model ChargeAdjustment {
+  id               String         @id @db.Uuid
+  organizationId   String         @db.Uuid
+  chargeId         String         @db.Uuid
+  adjustmentType   AdjustmentType
+  /// Positivo = REDUCE la deuda (descuento/condonación).
+  /// Negativo = la AUMENTA (recargo por mora).
+  amountCents      BigInt
+  /// Motivo de CATÁLOGO (§17). Un campo libre produce "desc", "autorizado" y
+  /// nada analizable; con catálogo, "¿cuánto nos cuesta la promoción de
+  /// estudiante?" tiene respuesta. Nulo solo en los ajustes anteriores al
+  /// Sprint 5: por eso el CHECK entra como NOT VALID.
+  reasonCode       String?
+  reason           String
+  approvedByUserId String?        @db.Uuid
+  createdByUserId  String?        @db.Uuid
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+
+  charge Charge @relation(fields: [chargeId, organizationId], references: [id, organizationId], map: "adjustments_charge_same_org_fk")
+
+  // -- SQL: CHECK (amountCents <> 0)
+  // -- SQL: CHECK de coherencia entre adjustmentType y el signo
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, chargeId])
+  @@map("charge_adjustments")
+}
+
+/// El MOVIMIENTO DE DINERO. Nunca se edita ni se borra: se contra-asienta.
+model Payment {
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  memberId       String  @db.Uuid
+  branchId       String? @db.Uuid
+
+  method PaymentMethodType
+  status PaymentStatus     @default(INITIATED)
+
+  /// Negativo SOLO si es un contra-asiento (garantizado por CHECK).
+  amountCents    BigInt
+  currency       String @default("MXN") @db.Char(3)
+  /// Lo no aplicado a ningún cargo = SALDO A FAVOR del socio.
+  unappliedCents BigInt @default(0)
+
+  /// Idempotencia de cobro. Contra el doble clic en el mostrador y contra
+  /// el reintento de un webhook.
+  idempotencyKey String?
+  /// Referencia del procesador (autorización, folio SPEI, referencia OXXO).
+  externalRef    String?
+  processorName  String?
+
+  receivedAt   DateTime @default(now()) @db.Timestamptz(3)
+  businessDate DateTime @db.Date
+
+  /// Turno al que se imputa. Nulo cuando el cobro no pasa por mostrador
+  /// (portal, domiciliación, transferencia conciliada después).
+  cashSessionId String? @db.Uuid
+  /// Folio de mostrador, legible en voz alta. Solo para cobros en caja.
+  folio         String?
+
+  /// Contra-asiento: enlaza al pago original. Un pago admite UNA reversa
+  /// total o VARIOS reembolsos parciales (BE2-01); la unicidad de la reversa
+  /// la impone un índice parcial en SQL sobre `isRefund = false`.
+  reversesPaymentId String? @db.Uuid
+  reversalReason    String?
+  /// El contra-asiento es un reembolso (parcial o total), no una reversa.
+  isRefund          Boolean @default(false)
+
+  failureCode   String?
+  failureReason String?
+
+  createdByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  member       Member              @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "payments_member_same_org_fk")
+  branch       Branch?             @relation("PaymentBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "payments_branch_same_org_fk")
+  cashSession  CashSession?        @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "payments_session_same_org_fk")
+  reverses     Payment?            @relation("PaymentReversal", fields: [reversesPaymentId], references: [id])
+  reversedBy   Payment[]           @relation("PaymentReversal")
+  allocations  PaymentAllocation[]
+  attempts     PaymentAttempt[]
+  refunds      Refund[]
+  chargebacks  Chargeback[]
+
+  /// Tarjeta con la que se cobró. Nulo en efectivo, terminal y transferencia.
+  paymentMethodId String?        @db.Uuid
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+
+  @@unique([id, organizationId], map: "payments_id_org_key")
+  // -- SQL: UNIQUE (organizationId, idempotencyKey) WHERE idempotencyKey IS NOT NULL
+  // -- SQL: CHECK (amountCents <> 0)
+  // -- SQL: CHECK (amountCents < 0) = (reversesPaymentId IS NOT NULL)
+  // -- SQL: CHECK (unappliedCents >= 0 AND unappliedCents <= abs(amountCents))
+  // -- SQL: REVOKE DELETE (un pago jamás se borra: se revierte)
+  @@index([organizationId, memberId, receivedAt(sort: Desc)])
+  @@index([organizationId, branchId, businessDate])
+  // -- SQL: UNIQUE (organizationId, folio) WHERE folio IS NOT NULL
+  @@index([organizationId, status, receivedAt])
+  @@index([cashSessionId, receivedAt])
+  /// Movimientos y ganancia por día: se recorre por fecha de negocio.
+  @@index([organizationId, businessDate])
+  /// Contra-asientos de un pago (reversa y reembolsos).
+  @@index([reversesPaymentId])
+  @@map("payments")
+}
+
+/// La tabla que hace posible el N:M. Aquí vive la verdad del "cuánto de este
+/// pago cubre cuál obligación".
+model PaymentAllocation {
+  id             String @id @db.Uuid
+  organizationId String @db.Uuid
+  paymentId      String @db.Uuid
+  chargeId       String @db.Uuid
+  amountCents    BigInt
+
+  createdByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId, organizationId], references: [id, organizationId], map: "alloc_payment_same_org_fk")
+  charge  Charge  @relation(fields: [chargeId, organizationId], references: [id, organizationId], map: "alloc_charge_same_org_fk")
+
+  /// Un pago se aplica UNA vez a cada cargo; para abonar más, se amplía la
+  /// asignación existente, no se crea una segunda.
+  @@unique([paymentId, chargeId], map: "alloc_payment_charge_key")
+  // -- SQL: CHECK (amountCents <> 0)
+  // -- SQL: REVOKE DELETE (desasignar es un asiento, no un borrado)
+  @@index([organizationId, chargeId])
+  @@map("payment_allocations")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 5 · CAJA Y CORTE DE TURNO
+//
+// El corte es el punto de MAYOR exposición a fuga del sistema, porque el
+// efectivo domina el cobro. La sesión cuelga de una CAJA, no de una sucursal
+// (ADR-013): tres cajeros compartiendo turno en una sede hacen que un faltante
+// no sea de nadie, y una diferencia que no es de nadie deja de investigarse.
+// ════════════════════════════════════════════════════════════════════════════
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+  /// Cuadrada contra el depósito bancario. Llega con el Sprint 13.
+  RECONCILED
+}
+
+enum CashMovementType {
+  FLOAT_IN
+  WITHDRAWAL
+  EXPENSE
+  DEPOSIT
+  CORRECTION
+}
+
+/// Punto de cobro físico. Una sucursal puede tener varias.
+model CashRegister {
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  branchId       String  @db.Uuid
+  /// Corto y estable: entra en el folio que el socio lee por teléfono.
+  code           String
+  name           String
+  isActive       Boolean @default(true)
+
+  /// Contador de folio POR CAJA. Puede tener huecos si una transacción se
+  /// revierte, y es correcto: un folio sin huecos obligaría a reutilizar
+  /// números, que es peor. No es fiscal —no se factura— sino operativo.
+  folioCounter Int @default(0)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  branch       Branch        @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "registers_branch_same_org_fk")
+  sessions     CashSession[]
+  organization Organization  @relation(fields: [organizationId], references: [id])
+
+  @@unique([id, organizationId], map: "cash_registers_id_org_key")
+  // -- SQL: UNIQUE (branchId, code) WHERE deletedAt IS NULL
+  @@index([organizationId, branchId, isActive])
+  @@map("cash_registers")
+}
+
+/// Turno de una caja.
+model CashSession {
+  id             String            @id @db.Uuid
+  organizationId String            @db.Uuid
+  branchId       String            @db.Uuid
+  cashRegisterId String            @db.Uuid
+  openedByUserId String            @db.Uuid
+  closedByUserId String?           @db.Uuid
+  shiftLabel     String?
+  businessDate   DateTime          @db.Date
+  status         CashSessionStatus @default(OPEN)
+
+  openingFloatCents     BigInt
+  /// Se calculan AL CERRAR. Mientras la sesión está abierta son nulos a
+  /// propósito: mostrar el esperado antes del conteo haría que el cajero
+  /// tecleara esa cifra y el corte dejaría de medir nada.
+  expectedCashCents     BigInt?
+  countedCashCents      BigInt?
+  /// contado − esperado. Negativo = FALTA dinero.
+  varianceCents         BigInt?
+  /// OBLIGATORIO si la diferencia no es cero. También si SOBRA: el sobrante
+  /// sistemático es la firma de un cobro no registrado.
+  varianceReason        String?
+  /// Corte ciego: el PRIMER conteo queda fijo aunque se cuente otra vez
+  /// (UXA-02). Sin esto, ver cuánto debía haber y recontar tapaba un faltante.
+  firstCountedCashCents BigInt?
+  countAttempts         Int     @default(0)
+
+  openedAt DateTime  @default(now()) @db.Timestamptz(3)
+  closedAt DateTime? @db.Timestamptz(3)
+
+  cashRegister CashRegister   @relation(fields: [cashRegisterId, organizationId], references: [id, organizationId], map: "sessions_register_same_org_fk")
+  branch       Branch         @relation("CashSessionBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "sessions_branch_same_org_fk")
+  movements    CashMovement[]
+  payments     Payment[]
+  posSales     PosSale[]
+
+  @@unique([id, organizationId], map: "cash_sessions_id_org_key")
+  // -- SQL: UNIQUE (cashRegisterId) WHERE status = 'OPEN'
+  //         ^^^ una sola sesión abierta POR CAJA
+  // -- SQL: CHECK (status = 'OPEN' OR countedCashCents IS NOT NULL)
+  // -- SQL: CHECK (varianceCents IS NULL OR varianceCents = 0 OR varianceReason IS NOT NULL)
+  // -- SQL: CHECK (openingFloatCents >= 0)
+  @@index([organizationId, branchId, businessDate])
+  @@index([organizationId, status, openedAt])
+  @@map("cash_sessions")
+}
+
+/// Entradas y salidas de efectivo que NO son cobros.
+/// Append-only: un retiro borrado es exactamente el fraude que el corte busca.
+model CashMovement {
+  id             String           @id @db.Uuid
+  organizationId String           @db.Uuid
+  cashSessionId  String           @db.Uuid
+  movementType   CashMovementType
+  /// Ya FIRMADO respecto al cajón: positivo entra, negativo sale. Guardarlo
+  /// firmado hace que el efectivo esperado sea una suma directa.
+  amountCents    BigInt
+  reason         String
+
+  createdByUserId  String  @db.Uuid
+  approvedByUserId String? @db.Uuid
+
+  at           DateTime @default(now()) @db.Timestamptz(3)
+  /// Día de negocio de la SEDE en que se hizo (DM-10): un turno que cruza la
+  /// medianoche reparte sus movimientos entre los dos días, como los pagos.
+  businessDate DateTime @db.Date
+
+  cashSession CashSession @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "movements_session_same_org_fk")
+
+  // -- SQL: CHECK (amountCents <> 0)
+  // -- SQL: CHECK de coherencia entre movementType y el signo
+  // -- SQL: CHECK (length(btrim(reason)) >= 3)
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, cashSessionId, at])
+  @@index([organizationId, businessDate], map: "cash_movements_org_business_date_idx")
+  @@map("cash_movements")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 6 · PUNTO DE VENTA
+//
+// Entra al MVP porque BLOQUEA EL CUTOVER, no por su valor intrínseco: si el
+// mostrador sigue cobrando el refresco en BDKGYM, el corte nunca cuadra en
+// GymFlow y no se puede apagar el sistema viejo. De ahí el alcance: catálogo
+// plano, sin variantes, sin proveedores, sin órdenes de compra.
+// ════════════════════════════════════════════════════════════════════════════
+
+enum PosSaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum InventoryMovementType {
+  PURCHASE
+  SALE
+  SALE_VOIDED
+  ADJUSTMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+  SHRINKAGE
+}
+
+model Product {
+  id              String  @id @db.Uuid
+  organizationId  String  @db.Uuid
+  sku             String
+  name            String
+  priceCents      BigInt
+  currency        String  @default("MXN") @db.Char(3)
+  /// Un servicio (p. ej. alquiler de casillero) no lleva existencias.
+  tracksInventory Boolean @default(true)
+  isActive        Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  saleLines    PosSaleLine[]
+  stock        InventoryStock[]
+  movements    InventoryMovement[]
+
+  @@unique([id, organizationId], map: "products_id_org_key")
+  // -- SQL: UNIQUE (organizationId, sku) WHERE deletedAt IS NULL
+  // -- SQL: CHECK (priceCents >= 0)
+  @@index([organizationId, isActive])
+  @@map("products")
+}
+
+/// Venta de mostrador. SIEMPRE pertenece a un turno de caja: sin eso el
+/// producto entra al sistema sin entrar a ningún cajón y el corte deja de
+/// cuadrar contra la realidad física.
+model PosSale {
+  id             String        @id @db.Uuid
+  organizationId String        @db.Uuid
+  branchId       String        @db.Uuid
+  cashSessionId  String        @db.Uuid
+  /// Nulo = venta a público general. El refresco se le vende a cualquiera.
+  memberId       String?       @db.Uuid
+  status         PosSaleStatus @default(COMPLETED)
+
+  totalCents BigInt
+  currency   String @default("MXN") @db.Char(3)
+
+  /// Cómo se pagó. Nulo SOLO si va a la cuenta del socio (`chargeId`).
+  method         PaymentMethodType?
+  /// Venta cargada a la cuenta: el dinero no entra hoy al cajón.
+  chargeId       String?            @unique @db.Uuid
+  /// Autorización de la terminal o clave de rastreo de la transferencia (UXA-09).
+  externalRef    String?
+  folio          String?
+  /// La genera el cliente una vez por venta: un doble clic o un reintento de
+  /// red devuelve la misma venta en lugar de cobrar dos veces.
+  idempotencyKey String?
+
+  voidedByUserId String?   @db.Uuid
+  voidReason     String?
+  voidedAt       DateTime? @db.Timestamptz(3)
+
+  soldByUserId String   @db.Uuid
+  soldAt       DateTime @default(now()) @db.Timestamptz(3)
+  businessDate DateTime @db.Date
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  branch       Branch        @relation("PosSaleBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "pos_sales_branch_same_org_fk")
+  cashSession  CashSession   @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "pos_sales_session_same_org_fk")
+  member       Member?       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "pos_sales_member_same_org_fk")
+  charge       Charge?       @relation(fields: [chargeId, organizationId], references: [id, organizationId], map: "pos_sales_charge_same_org_fk")
+  lines        PosSaleLine[]
+
+  @@unique([id, organizationId], map: "pos_sales_id_org_key")
+  /// Soporte de la relación 1:1 con el cargo, que además impide que dos ventas
+  /// se carguen al mismo cargo.
+  @@unique([chargeId, organizationId], map: "pos_sales_charge_org_key")
+  @@unique([organizationId, idempotencyKey], map: "pos_sales_idempotency_key")
+  // -- SQL: CHECK (status <> 'VOIDED' OR voidReason IS NOT NULL)
+  // -- SQL: CHECK ((chargeId IS NULL) = (method IS NOT NULL))
+  //         ^^^ o se cobra ahora, o va a la cuenta. Nunca las dos, nunca ninguna.
+  // -- SQL: CHECK (totalCents >= 0)
+  // -- SQL: UNIQUE (organizationId, folio) WHERE folio IS NOT NULL
+  // -- SQL: REVOKE DELETE (una venta se anula, no se borra)
+  @@index([organizationId, branchId, businessDate])
+  @@index([cashSessionId, soldAt])
+  @@index([organizationId, memberId, soldAt(sort: Desc)])
+  @@map("pos_sales")
+}
+
+/// El precio se CONGELA en la línea. Derivarlo del producto al leer haría que
+/// una venta de hace tres meses cambiara de importe al subir el precio.
+model PosSaleLine {
+  id             String @id @db.Uuid
+  organizationId String @db.Uuid
+  posSaleId      String @db.Uuid
+  productId      String @db.Uuid
+  quantity       Int
+  unitPriceCents BigInt
+  lineTotalCents BigInt
+
+  posSale PosSale @relation(fields: [posSaleId, organizationId], references: [id, organizationId], map: "pos_lines_sale_same_org_fk")
+  product Product @relation(fields: [productId, organizationId], references: [id, organizationId], map: "pos_lines_product_same_org_fk")
+
+  // -- SQL: CHECK (quantity > 0)
+  // -- SQL: CHECK (lineTotalCents = unitPriceCents * quantity)
+  // -- SQL: CHECK (unitPriceCents >= 0)
+  @@index([posSaleId])
+  @@index([organizationId, productId])
+  @@map("pos_sale_lines")
+}
+
+/// Las existencias son POR SUCURSAL: el refresco está físicamente en un
+/// refrigerador concreto, y un traspaso entre sedes es un movimiento real.
+model InventoryStock {
+  organizationId String   @db.Uuid
+  branchId       String   @db.Uuid
+  productId      String   @db.Uuid
+  quantityOnHand Int      @default(0)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  branch  Branch  @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "stock_branch_same_org_fk")
+  product Product @relation(fields: [productId, organizationId], references: [id, organizationId], map: "stock_product_same_org_fk")
+
+  @@id([branchId, productId])
+  // -- SQL: CHECK (quantityOnHand >= 0)
+  @@index([organizationId, productId])
+  @@map("inventory_stock")
+}
+
+/// Libro de movimientos de existencias. Append-only: hacer desaparecer
+/// producto sin dejar rastro es la versión en especie del robo hormiga.
+model InventoryMovement {
+  id             String                @id @db.Uuid
+  organizationId String                @db.Uuid
+  branchId       String                @db.Uuid
+  productId      String                @db.Uuid
+  movementType   InventoryMovementType
+  /// Firmado: positivo entra, negativo sale.
+  quantityDelta  Int
+  /// OBLIGATORIO en ajuste, merma y traspaso.
+  reason         String?
+  /// Enlace a la venta que lo originó, para poder reconstruir el porqué.
+  posSaleId      String?               @db.Uuid
+
+  createdByUserId String   @db.Uuid
+  at              DateTime @default(now()) @db.Timestamptz(3)
+  businessDate    DateTime @db.Date
+
+  product Product @relation(fields: [productId, organizationId], references: [id, organizationId], map: "inv_moves_product_same_org_fk")
+  branch  Branch  @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "inv_moves_branch_same_org_fk")
+
+  // -- SQL: CHECK (quantityDelta <> 0)
+  // -- SQL: CHECK de coherencia entre movementType y el signo
+  // -- SQL: CHECK (movementType NOT IN ('ADJUSTMENT','SHRINKAGE','TRANSFER_IN','TRANSFER_OUT') OR reason IS NOT NULL)
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, branchId, productId, at])
+  @@index([organizationId, businessDate])
+  @@map("inventory_movements")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 7 · ACCESO
+//
+// `AccessDecision` y `AttendanceEvent` están SEPARADOS a propósito (ADR-015).
+// Una decisión es lo que la política resolvió —incluidas las negativas, que
+// son las que más información dan—. Una asistencia es que alguien ENTRÓ de
+// verdad. Mezclarlas haría imposible contestar "¿a cuánta gente rechazamos
+// este mes y por qué?", que es justo la pregunta que alimenta la pantalla de
+// excepción y las alertas de retención.
+// ════════════════════════════════════════════════════════════════════════════
+
+enum AccessOutcome {
+  GRANTED
+  DENIED
+}
+
+enum CredentialKind {
+  /// EXPAND/CONTRACT (ADR-027). `QR`, `RFID` y `PIN` quedaron sin uso con
+  /// ADR-032 y **no se retiran**: `access_decisions` es append-only y hay
+  /// historial escrito con esos valores. Se deja de escribirlos, nada más.
+  QR
+  RFID
+  PIN
+  FINGERPRINT
+  FACE
+  MANUAL
+}
+
+enum BiometricModality {
+  FACE
+  FINGERPRINT
+}
+
+enum GatewayStatus {
+  ONLINE
+  DEGRADED
+  OFFLINE
+}
+
+/// Un gateway por punto de acceso. Se identifica con mTLS.
+model AccessGateway {
+  id             String        @id @db.Uuid
+  organizationId String        @db.Uuid
+  branchId       String        @db.Uuid
+  code           String
+  name           String
+  status         GatewayStatus @default(OFFLINE)
+
+  /// Versión de la POLÍTICA que ejecuta, reportada en cada latido.
+  /// Si no coincide con la de la nube, la puerta puede estar decidiendo
+  /// distinto que el servidor, y eso ocurre SIN ERROR si no se compara.
+  policyVersion String?
+  /// Versión del padrón firmado que tiene cargado (ADR-015).
+  rosterVersion BigInt?
+
+  lastHeartbeatAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  branch       Branch           @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "gateways_branch_same_org_fk")
+  decisions    AccessDecision[]
+
+  @@unique([id, organizationId], map: "access_gateways_id_org_key")
+  // -- SQL: UNIQUE (organizationId, code) WHERE deletedAt IS NULL
+  @@index([organizationId, branchId, status])
+  @@map("access_gateways")
+}
+
+/// Toda decisión de la política, permitida o NEGADA. Append-only.
+model AccessDecision {
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  branchId       String  @db.Uuid
+  gatewayId      String? @db.Uuid
+  memberId       String? @db.Uuid
+
+  /// Clave de UN intento (un clic en "Entrada", un paso del torniquete).
+  /// El mismo intento enviado dos veces devuelve la misma decisión (UXA-01).
+  requestKey String?
+
+  outcome        AccessOutcome
+  /// Motivo de la negativa. Nulo si entró.
+  denialReason   String?
+  credentialKind CredentialKind
+
+  /// Versión de la política que produjo ESTA decisión. Sin ella, un rechazo
+  /// discutido meses después no se puede reproducir.
+  policyVersion      String
+  /// Decidida sin consultar a la nube.
+  decidedOffline     Boolean @default(false)
+  /// Concesión manual de recepción: lleva actor y motivo (§9).
+  overriddenByUserId String? @db.Uuid
+  overrideReason     String?
+  /// El rechazo que esta concesión RESUELVE (5-10, auditoría 8): un rechazo se
+  /// levanta una sola vez, también si dos personas lo intentan a la vez.
+  /// Nulo en todo lo que no es una concesión.
+  resolvesDecisionId String? @db.Uuid
+
+  /**
+   * Evidencia del reconocimiento biométrico (ADR-032).
+   * Sin esto, un acierto y un falso positivo son indistinguibles en la
+   * bitácora: un HMAC prueba, un parecido es una probabilidad, y guardar
+   * cuál era es lo único que permite calibrar el umbral después y defender
+   * una decisión meses más tarde.
+   */
+  matchScore     Float?
+  /// Distancia con el segundo candidato. Es lo que delata una ambigüedad 1:N.
+  matchMargin    Float?
+  /// NONE | ACTIVE | PASSIVE | BOTH. Qué comprobación de vida se ejecutó.
+  livenessMode   String?
+  livenessPassed Boolean?
+
+  at           DateTime @default(now()) @db.Timestamptz(3)
+  businessDate DateTime @db.Date
+
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  branch       Branch           @relation("AccessDecisionBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "decisions_branch_same_org_fk")
+  gateway      AccessGateway?   @relation(fields: [gatewayId, organizationId], references: [id, organizationId], map: "decisions_gateway_same_org_fk")
+  member       Member?          @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "decisions_member_same_org_fk")
+  attendance   AttendanceEvent?
+  /// El rechazo que resuelve esta concesión (5-10); uno a uno por la unicidad de abajo.
+  resuelve     AccessDecision?  @relation("DecisionResuelve", fields: [resolvesDecisionId, organizationId], references: [id, organizationId], map: "decisions_resolves_same_org_fk", onDelete: Restrict, onUpdate: Cascade)
+  resueltaPor  AccessDecision?  @relation("DecisionResuelve")
+
+  @@unique([id, organizationId], map: "access_decisions_id_org_key")
+  /// Una concesión por rechazo (5-10). Los NULL no chocan entre sí.
+  @@unique([resolvesDecisionId, organizationId], map: "access_decisions_resolves_key")
+  // -- SQL: CHECK ((outcome = 'DENIED') = (denialReason IS NOT NULL))
+  // -- SQL: CHECK (overriddenByUserId IS NULL OR overrideReason IS NOT NULL)
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, branchId, businessDate])
+  @@index([organizationId, memberId, at(sort: Desc)])
+  @@index([organizationId, outcome, businessDate])
+  /// El monitor y el pulso piden "lo último de una sede" (OPT3-01).
+  @@index([organizationId, branchId, at(sort: Desc)])
+  @@map("access_decisions")
+}
+
+/// El socio ENTRÓ. Es el hecho de negocio, distinto de la decisión.
+model AttendanceEvent {
+  id               String @id @db.Uuid
+  organizationId   String @db.Uuid
+  branchId         String @db.Uuid
+  memberId         String @db.Uuid
+  /// La decisión que lo autorizó. Única: una entrada por decisión.
+  accessDecisionId String @db.Uuid
+
+  at           DateTime @default(now()) @db.Timestamptz(3)
+  businessDate DateTime @db.Date
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  branch       Branch         @relation("AttendanceBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "attendance_branch_same_org_fk")
+  member       Member         @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "attendance_member_same_org_fk")
+  decision     AccessDecision @relation(fields: [accessDecisionId, organizationId], references: [id, organizationId], map: "attendance_decision_same_org_fk")
+
+  @@unique([accessDecisionId], map: "attendance_decision_key")
+  @@unique([accessDecisionId, organizationId], map: "attendance_decision_org_key")
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, memberId, at(sort: Desc)])
+  @@index([organizationId, branchId, businessDate])
+  @@map("attendance_events")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 8 · CREDENCIALES Y PADRÓN FIRMADO
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Credencial del socio. Un socio puede tener varias (QR y tarjeta, p. ej.).
+model MemberCredential {
+  id             String         @id @db.Uuid
+  organizationId String         @db.Uuid
+  memberId       String         @db.Uuid
+  kind           CredentialKind
+
+  /// Secreto del QR rotativo, CIFRADO. Es lo que permite al gateway validar
+  /// sin red, y por eso viaja en el padrón firmado.
+  secretEncrypted String?
+  pinHash         String?
+  rfidCardId      String?
+
+  /// Anti-replay: el último contador aceptado. Un código ya usado no vuelve
+  /// a valer ni dentro de su ventana de treinta segundos.
+  lastUsedCounter Int?
+
+  revokedAt     DateTime? @db.Timestamptz(3)
+  revokedReason String?
+
+  issuedAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "credentials_member_same_org_fk")
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([id, organizationId], map: "member_credentials_id_org_key")
+  // -- SQL: UNIQUE (memberId, kind) WHERE revokedAt IS NULL
+  //         ^^^ una credencial VIVA por tipo y socio.
+  // -- SQL: UNIQUE (organizationId, rfidCardId) WHERE rfidCardId IS NOT NULL AND revokedAt IS NULL
+  // -- SQL: CHECK ((revokedAt IS NULL) = (revokedReason IS NULL))
+  @@index([organizationId, memberId])
+  @@map("member_credentials")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SPRINT 10 · PORTAL DEL SOCIO
+//
+// Sesión SEPARADA de la del personal. Reutilizar `Session` obligaría a hacer
+// `userId` nulo y perder su clave foránea, y mezclar sesiones de socio y de
+// personal en una tabla es una invitación a confundir privilegios: un error
+// ahí no falla, autoriza (ADR-023).
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Invitación de un solo uso para activar el portal.
+///
+/// El socio se activa CON RECEPCIÓN DELANTE, que es como ocurre de verdad en
+/// el alta. Evita depender de un proveedor de SMS y es más seguro que un
+/// código de seis dígitos por mensaje.
+model PortalInvite {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  memberId       String    @db.Uuid
+  /// sha256 del código. El valor en claro solo existe en el papel o la
+  /// pantalla que ve el socio.
+  codeHash       String    @unique
+  issuedByUserId String?   @db.Uuid
+  expiresAt      DateTime  @db.Timestamptz(3)
+  usedAt         DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "invites_member_same_org_fk")
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: UNIQUE (memberId) WHERE usedAt IS NULL
+  //         ^^^ una invitación viva por socio: dos códigos válidos a la vez
+  //             significan que uno anda suelto sin que nadie lo sepa.
+  @@index([organizationId, expiresAt])
+  @@map("portal_invites")
+}
+
+/// Sesión del socio en el portal.
+model MemberSession {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  memberId       String    @db.Uuid
+  /// sha256 del identificador opaco. En claro solo vive en la cookie.
+  tokenHash      String    @unique
+  deviceLabel    String?
+  userAgent      String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastSeenAt     DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt      DateTime  @db.Timestamptz(3)
+  revokedAt      DateTime? @db.Timestamptz(3)
+  revokedReason  String?
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "member_sessions_member_same_org_fk")
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: CHECK ((revokedAt IS NULL) = (revokedReason IS NULL))
+  @@index([memberId, expiresAt])
+  @@index([expiresAt])
+  @@map("member_sessions")
+}
+
+// ============================================================================
+// DOMINIO 8 — ALTA DIGITAL Y CLASES (Sprint 11)
+// ============================================================================
+
+enum ConsentDocumentStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+enum MemberIntakeStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum ClassOccurrenceStatus {
+  SCHEDULED
+  CANCELED
+  CLOSED
+}
+
+enum ClassBookingStatus {
+  BOOKED
+  CANCELED
+  ATTENDED
+  NO_SHOW
+}
+
+enum ClassBookingSource {
+  PORTAL
+  FRONT_DESK
+}
+
+/// El TEXTO versionado que se le enseña al socio.
+///
+/// `MemberConsent` guarda que aceptó; esto guarda QUÉ aceptó. Separarlos evita
+/// repetir el mismo texto 1,500 veces y, sobre todo, permite exigir que el
+/// texto sea inmutable una vez publicado: si se pudiera editar, la evidencia
+/// de los que ya firmaron cambiaría sola.
+model ConsentDocument {
+  id                String                @id @db.Uuid
+  organizationId    String                @db.Uuid
+  consentType       ConsentType
+  version           String
+  status            ConsentDocumentStatus @default(DRAFT)
+  title             String
+  bodyText          String
+  /// sha256 del texto publicado. Es el ancla de la evidencia.
+  bodyHash          String?
+  publishedAt       DateTime?             @db.Timestamptz(3)
+  publishedByUserId String?               @db.Uuid
+  retiredAt         DateTime?             @db.Timestamptz(3)
+  createdAt         DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime              @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: UNIQUE (organizationId, consentType) WHERE status = 'PUBLISHED'
+  //         ^^^ una sola versión vigente por tipo: dos textos publicados a la
+  //             vez significa que nadie sabe cuál firmó el socio.
+  // -- SQL: trigger que impide cambiar bodyText/version de un PUBLISHED
+  @@unique([organizationId, consentType, version])
+  @@index([organizationId, status])
+  @@map("consent_documents")
+}
+
+/// Borrador de alta que manda el SOCIO desde su teléfono.
+///
+/// No es un socio todavía, y esa distinción es el diseño: un formulario
+/// público que escribiera directo en `members` fabricaría un padrón sucio a
+/// velocidad industrial. Recepción confirma, con los duplicados delante.
+model MemberIntake {
+  id             String             @id @db.Uuid
+  organizationId String             @db.Uuid
+  branchId       String             @db.Uuid
+  status         MemberIntakeStatus @default(SUBMITTED)
+
+  firstName String
+  lastName  String
+  /// Normalizado para la búsqueda difusa de duplicados, igual que en members.
+  nameKey   String
+  phoneE164 String?
+  email     String?
+  birthDate DateTime? @db.Date
+
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  /// "¿Desde cuándo vienes?" — lo contesta el socio (ADR-029).
+  memberSince           DateTime? @db.Date
+  healthNotes           String?
+
+  /// Qué versión de qué documento aceptó, tal cual se le presentó.
+  /// La evidencia definitiva se escribe en `member_consents` al aprobar.
+  acceptedConsents Json
+
+  ip          String?
+  userAgent   String?
+  submittedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  reviewedAt       DateTime? @db.Timestamptz(3)
+  reviewedByUserId String?   @db.Uuid
+  rejectionReason  String?
+  /// Al aprobarse queda ligado al socio creado o actualizado.
+  memberId         String?   @db.Uuid
+
+  /// Lo que recepción corrigió o completó y guardó SIN aprobar (bloque 2.4,
+  /// 9-21): solo los campos cambiados. El envío original no se toca: es la
+  /// evidencia de lo que el socio escribió. Se aplican al aprobar o vincular.
+  corrections       Json?
+  correctedAt       DateTime? @db.Timestamptz(3)
+  correctedByUserId String?   @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch       @relation("IntakeBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "intakes_branch_same_org_fk")
+  member       Member?      @relation("IntakeConversion", fields: [memberId], references: [id])
+
+  // -- SQL: CHECK ((status = 'APPROVED') = (memberId IS NOT NULL))
+  // -- SQL: CHECK ((status = 'REJECTED') <= (rejectionReason IS NOT NULL))
+  @@index([nameKey(ops: raw("gin_trgm_ops"))], type: Gin, map: "intakes_name_trgm_idx")
+  @@index([organizationId, status, submittedAt(sort: Desc)])
+  @@index([memberId])
+  @@map("member_intakes")
+}
+
+/// Qué clase es. El horario es otra cosa.
+model ClassType {
+  id                 String  @id @db.Uuid
+  organizationId     String  @db.Uuid
+  name               String
+  description        String?
+  defaultDurationMin Int     @default(60)
+  defaultCapacity    Int     @default(20)
+  /// Precio de la clase suelta para quien no la tiene incluida en su plan.
+  dropInPriceCents   BigInt  @default(0)
+  /// ¿Puede ir incluida en un plan? Si no, siempre se paga como clase suelta.
+  includableInPlans  Boolean @default(true)
+  isActive           Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  templates    ClassTemplate[]
+  schedules    ClassSchedule[]
+
+  // -- SQL: UNIQUE (organizationId, name) WHERE deletedAt IS NULL
+  @@unique([id, organizationId], map: "class_types_id_org_key")
+  @@index([organizationId, isActive])
+  @@map("class_types")
+}
+
+/// La PLANTILLA semanal: "spinning, lunes y miércoles a las 7:00, sala 2".
+/// De aquí salen las ocurrencias concretas, que son las que se reservan.
+model ClassTemplate {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  branchId       String    @db.Uuid
+  classTypeId    String    @db.Uuid
+  coachUserId    String?   @db.Uuid
+  room           String?
+  /// Intervalo SEMIABIERTO `[effectiveFrom, effectiveTo)` (ADR-006).
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+  isActive       Boolean   @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  branch    Branch              @relation("ClassTemplateBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "class_templates_branch_same_org_fk")
+  classType ClassType           @relation(fields: [classTypeId, organizationId], references: [id, organizationId], map: "class_templates_type_same_org_fk")
+  slots     ClassTemplateSlot[]
+  schedules ClassSchedule[]
+
+  // -- SQL: CHECK (effectiveTo IS NULL OR effectiveTo > effectiveFrom)
+  @@index([organizationId, branchId, isActive])
+  @@map("class_templates")
+}
+
+/// Una franja de la plantilla. La hora se guarda como MINUTOS LOCALES, no como
+/// instante: "las 7:00 de la sucursal" sobrevive al cambio de hora; un desfase
+/// congelado, no (`resolveWallTime`).
+model ClassTemplateSlot {
+  id          String @id @db.Uuid
+  templateId  String @db.Uuid
+  /// 0 = domingo, como `Date.getUTCDay()`.
+  weekday     Int    @db.SmallInt
+  startMinute Int    @db.SmallInt
+  durationMin Int    @db.SmallInt
+  capacity    Int    @db.SmallInt
+
+  template ClassTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  // -- SQL: CHECK (weekday BETWEEN 0 AND 6)
+  // -- SQL: CHECK (startMinute BETWEEN 0 AND 1439)
+  // -- SQL: CHECK (durationMin > 0 AND durationMin <= 480)
+  // -- SQL: CHECK (capacity > 0)
+  @@unique([templateId, weekday, startMinute])
+  @@map("class_template_slots")
+}
+
+/// La clase CONCRETA del martes 7:00. Es lo que se reserva y lo que se llena.
+model ClassSchedule {
+  id                 String                @id @db.Uuid
+  organizationId     String                @db.Uuid
+  branchId           String                @db.Uuid
+  classTypeId        String                @db.Uuid
+  templateId         String?               @db.Uuid
+  coachUserId        String?               @db.Uuid
+  room               String?
+  /// Clave DERIVADA de plantilla + fecha + franja. El generador corre a diario
+  /// sobre un horizonte que se solapa; sin esto, duplicaría cada clase.
+  occurrenceKey      String
+  startsAt           DateTime              @db.Timestamptz(3)
+  endsAt             DateTime              @db.Timestamptz(3)
+  businessDate       DateTime              @db.Date
+  capacity           Int
+  /// Derivado cacheado. Se mueve SOLO con
+  /// `UPDATE ... WHERE bookedCount < capacity RETURNING`.
+  bookedCount        Int                   @default(0)
+  status             ClassOccurrenceStatus @default(SCHEDULED)
+  /// `SHIFTED` o `AMBIGUOUS` = el cambio de hora movió esta clase. Se marca
+  /// para que alguien la mire, en vez de que se mueva sola sin testigos.
+  wallTimeResolution String                @default("EXACT")
+  canceledAt         DateTime?             @db.Timestamptz(3)
+  cancelReason       String?
+  /// La pausa del horario que canceló esta sesión (bloque 2.5): si la pausa
+  /// se quita antes de que empiece, la sesión vuelve.
+  pauseId            String?               @db.Uuid
+  closedAt           DateTime?             @db.Timestamptz(3)
+  createdAt          DateTime              @default(now()) @db.Timestamptz(3)
+
+  branch    Branch         @relation("ClassScheduleBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "class_schedules_branch_same_org_fk")
+  classType ClassType      @relation(fields: [classTypeId, organizationId], references: [id, organizationId], map: "class_schedules_type_same_org_fk")
+  template  ClassTemplate? @relation(fields: [templateId], references: [id])
+  bookings  ClassBooking[]
+
+  // -- SQL: CHECK (bookedCount >= 0 AND bookedCount <= capacity)
+  // -- SQL: CHECK (endsAt > startsAt)
+  // -- SQL: CHECK ((status = 'CANCELED') = (canceledAt IS NOT NULL))
+  @@unique([organizationId, occurrenceKey])
+  @@unique([id, organizationId], map: "class_schedules_id_org_key")
+  @@index([organizationId, branchId, businessDate])
+  @@index([organizationId, startsAt])
+  @@map("class_schedules")
+}
+
+model ClassBooking {
+  id              String             @id @db.Uuid
+  organizationId  String             @db.Uuid
+  branchId        String             @db.Uuid
+  classScheduleId String             @db.Uuid
+  memberId        String             @db.Uuid
+  status          ClassBookingStatus @default(BOOKED)
+  source          ClassBookingSource @default(FRONT_DESK)
+  /// Solo si es clase suelta de pago.
+  chargeId        String?            @unique @db.Uuid
+  bookedAt        DateTime           @default(now()) @db.Timestamptz(3)
+  bookedByUserId  String?            @db.Uuid
+  canceledAt      DateTime?          @db.Timestamptz(3)
+  /// Canceló fuera de plazo: liberó la plaza, pero cuenta como falta.
+  lateCancel      Boolean            @default(false)
+  checkedInAt     DateTime?          @db.Timestamptz(3)
+  closedAt        DateTime?          @db.Timestamptz(3)
+
+  classSchedule ClassSchedule @relation(fields: [classScheduleId, organizationId], references: [id, organizationId], map: "class_bookings_schedule_same_org_fk")
+  member        Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "class_bookings_member_same_org_fk")
+  charge        Charge?       @relation(fields: [chargeId], references: [id])
+
+  // -- SQL: UNIQUE (classScheduleId, memberId) WHERE status <> 'CANCELED'
+  //         ^^^ la doble reserva se impide en la BASE, no en el servicio:
+  //             dos pulsaciones simultáneas ganan a cualquier comprobación
+  //             hecha antes de escribir.
+  // -- SQL: CHECK ((status = 'CANCELED') = (canceledAt IS NOT NULL))
+  @@index([organizationId, memberId, bookedAt(sort: Desc)])
+  @@index([classScheduleId, status])
+  @@map("class_bookings")
+}
+
+/// Bloqueo de reservas por faltas (ADR-025). NUNCA es dinero.
+///
+/// Vive en su propia tabla y no como columna de `members` para no cruzar la
+/// frontera del módulo: clases sanciona, socios no sabe de clases.
+model ClassBookingBlock {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  memberId       String   @db.Uuid
+  /// Semiabierto: bloqueado mientras `now < untilDate`.
+  untilDate      DateTime @db.Timestamptz(3)
+  noShowCount    Int
+  reason         String
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  member Member @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "booking_blocks_member_same_org_fk")
+
+  @@index([organizationId, memberId, untilDate(sort: Desc)])
+  @@map("class_booking_blocks")
+}
+
+/// Las reglas de reserva que fija cada gimnasio (11-08, bloque 2.5). Sin
+/// fila valen las de fábrica (`DEFAULT_BOOKING_SETTINGS` del núcleo).
+model ClassSettings {
+  organizationId      String   @id @db.Uuid
+  /// Con cuántos días de antelación se puede reservar.
+  maxDaysAhead        Int      @db.SmallInt
+  /// Minutos antes de la clase en que cancelar empieza a contar como falta.
+  cancelCutoffMinutes Int
+  /// Días hacia atrás en que se cuentan las faltas.
+  noShowWindowDays    Int      @db.SmallInt
+  /// Faltas que bloquean las reservas.
+  noShowsBeforeBlock  Int      @db.SmallInt
+  /// Días que dura el bloqueo.
+  blockDays           Int      @db.SmallInt
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
+  updatedByUserId     String?  @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: CHECK de rangos, los mismos que `BOOKING_RULE_LIMITS` del núcleo.
+  @@map("class_settings")
+}
+
+/// Pausa del horario por fechas (11-05, bloque 2.5): «del 22 de diciembre al
+/// 2 de enero no hay clases». Mientras esté viva, esos días no se generan
+/// sesiones; las que ya existían se cancelaron al crearla.
+model ClassPause {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  /// `null` = todas las sucursales.
+  branchId        String?   @db.Uuid
+  /// Los dos días incluidos, en el calendario de la sucursal.
+  fromDate        DateTime  @db.Date
+  toDate          DateTime  @db.Date
+  reason          String
+  createdByUserId String?   @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  /// Se quitó antes de terminar: deja de valer desde ese momento.
+  endedAt         DateTime? @db.Timestamptz(3)
+  endedByUserId   String?   @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch?      @relation("ClassPauseBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "class_pauses_branch_same_org_fk")
+
+  // -- SQL: CHECK (toDate >= fromDate)
+  @@index([organizationId, toDate])
+  @@map("class_pauses")
+}
+
+// ============================================================================
+// DOMINIO 9 — DOMICILIACIÓN (Sprint 12)
+// ============================================================================
+
+enum PaymentMethodStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum PaymentAttemptOutcome {
+  SUCCESS
+  SOFT_DECLINE
+  /// No se reintenta solo: reintentar sube la tasa de rechazos del comercio,
+  /// que las redes penalizan, y no recupera nada.
+  HARD_DECLINE
+  AUTH_REQUIRED
+  ERROR
+  /// Sin respuesta. NO es un fallo: bloquea reintentos hasta conciliar.
+  UNKNOWN
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum ChargebackStatus {
+  OPEN
+  UNDER_REVIEW
+  WON
+  LOST
+  ACCEPTED
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+  DEAD_LETTER
+}
+
+/// Tarjeta en archivo. **Nunca el número**: solo el token del proveedor, la
+/// marca y los últimos cuatro (§11.7, regla dura 2).
+model PaymentMethod {
+  id                 String              @id @db.Uuid
+  organizationId     String              @db.Uuid
+  memberId           String              @db.Uuid
+  provider           String
+  /// Token del proveedor. Jamás el PAN, ni cifrado.
+  providerTokenRef   String
+  providerCustomerId String?
+  brand              String?
+  last4              String?             @db.Char(4)
+  expMonth           Int?                @db.SmallInt
+  expYear            Int?                @db.SmallInt
+  isDefault          Boolean             @default(false)
+  /// Mandato de cargos recurrentes. OBLIGATORIO para cobrar off-session: un
+  /// cargo sin mandato demostrable es un contracargo que se pierde, porque
+  /// la carga de la prueba es del comercio.
+  consentId          String?             @db.Uuid
+  status             PaymentMethodStatus @default(ACTIVE)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  revokedAt          DateTime?           @db.Timestamptz(3)
+  revokedReason      String?
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  member       Member         @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "payment_methods_member_same_org_fk")
+  consent      MemberConsent? @relation(fields: [consentId], references: [id])
+  payments     Payment[]
+
+  // -- SQL: UNIQUE (organizationId, memberId) WHERE isDefault AND status = 'ACTIVE'
+  //         ^^^ un solo método predeterminado vivo por socio: dos significa
+  //             que nadie sabe con cuál se va a cobrar el día 1.
+  // -- SQL: CHECK (last4 IS NULL OR last4 ~ '^[0-9]{4}$')
+  // -- SQL: CHECK ((status = 'REVOKED') = (revokedAt IS NOT NULL))
+  /// El mismo token no se da de alta dos veces: serían dos tarjetas en la
+  /// base y una sola en el procesador. Se declara AQUÍ y no en SQL crudo —
+  /// Prisma sabe representar un único normal, y lo que no ve lo borra como
+  /// deriva en la siguiente migración.
+  @@unique([provider, providerTokenRef])
+  @@index([organizationId, memberId, status])
+  /// Aviso de tarjeta por vencer antes de que falle el cobro, no después.
+  @@index([organizationId, expYear, expMonth])
+  @@map("payment_methods")
+}
+
+/// Intento contra el procesador.
+///
+/// La `idempotencyKey` se PERSISTE ANTES de la llamada. Es lo único que
+/// permite resolver un timeout sin cobrar dos veces: si el proceso muere
+/// entre la llamada y la respuesta, el reintento reconstruye la misma clave
+/// y el procesador reconoce la operación en vez de repetirla.
+model PaymentAttempt {
+  id              String                 @id @db.Uuid
+  organizationId  String                 @db.Uuid
+  memberId        String                 @db.Uuid
+  /// NULLABLE a propósito: el intento se escribe ANTES de llamar, y si el
+  /// cobro falla no hay pago que apuntar. Un intento sin pago es el registro
+  /// de que se pidió dinero y no entró — que es exactamente lo que hay que
+  /// poder demostrar.
+  paymentId       String?                @db.Uuid
+  chargeId        String?                @db.Uuid
+  attemptNumber   Int                    @db.SmallInt
+  idempotencyKey  String                 @unique
+  outcome         PaymentAttemptOutcome?
+  providerCode    String?
+  providerMessage String?
+  /// Respuesta cruda del proveedor. Es lo que permite reconstruir el pasado
+  /// cuando se descubre un defecto meses después.
+  rawResponse     Json?
+  attemptedAt     DateTime               @default(now()) @db.Timestamptz(3)
+  resolvedAt      DateTime?              @db.Timestamptz(3)
+
+  payment Payment? @relation(fields: [paymentId, organizationId], references: [id, organizationId], map: "attempts_payment_same_org_fk")
+
+  @@unique([chargeId, attemptNumber])
+  @@index([organizationId, memberId, attemptedAt(sort: Desc)])
+  @@index([organizationId, outcome, attemptedAt(sort: Desc)])
+  @@map("payment_attempts")
+}
+
+model Refund {
+  id                String       @id @db.Uuid
+  organizationId    String       @db.Uuid
+  paymentId         String       @db.Uuid
+  branchId          String?      @db.Uuid
+  amountCents       BigInt
+  status            RefundStatus @default(PENDING)
+  /// OBLIGATORIO. Un reembolso sin motivo es dinero que sale sin explicación.
+  reason            String
+  createdByUserId   String?      @db.Uuid
+  approvedByUserId  String?      @db.Uuid
+  externalReference String?
+  idempotencyKey    String
+  createdAt         DateTime     @default(now()) @db.Timestamptz(3)
+  confirmedAt       DateTime?    @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId, organizationId], references: [id, organizationId], map: "refunds_payment_same_org_fk")
+
+  // -- SQL: CHECK (amountCents > 0)
+  // -- SQL: trigger SUM(refunds vivos) <= payment.amountCents
+  // -- SQL: REVOKE DELETE
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status, createdAt(sort: Desc)])
+  @@map("refunds")
+}
+
+/// Contracargo. La ventana real de riesgo en México es de ~135 días desde la
+/// FECHA DE CORTE del estado de cuenta del socio, no desde el cargo.
+model Chargeback {
+  id             String           @id @db.Uuid
+  organizationId String           @db.Uuid
+  paymentId      String           @db.Uuid
+  amountCents    BigInt
+  status         ChargebackStatus @default(OPEN)
+  providerCaseId String?          @unique
+  reasonCode     String?
+  openedAt       DateTime         @db.Timestamptz(3)
+  dueByAt        DateTime?        @db.Timestamptz(3)
+  resolvedAt     DateTime?        @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId, organizationId], references: [id, organizationId], map: "chargebacks_payment_same_org_fk")
+
+  @@index([organizationId, status, openedAt(sort: Desc)])
+  @@map("chargebacks")
+}
+
+/// Evento crudo del procesador.
+///
+/// Se persiste ANTES de procesarlo: la ingesta responde 200 y encola, nunca
+/// procesa en línea. Un webhook que se procesa en la propia petición se
+/// pierde entero si el proceso falla a la mitad, y el proveedor deja de
+/// reintentarlo mucho antes de que alguien se dé cuenta.
+///
+/// `organizationId` es NULLABLE a propósito: el evento puede llegar antes de
+/// poder resolver a qué tenant pertenece.
+model WebhookEvent {
+  id                String             @id @db.Uuid
+  organizationId    String?            @db.Uuid
+  provider          String
+  providerEventId   String
+  eventType         String
+  rawPayload        Json
+  /// VALID | INVALID. Inválida NO se deduplica: se rechaza y se alerta.
+  signatureStatus   String
+  status            WebhookEventStatus @default(RECEIVED)
+  processAttempts   Int                @default(0)
+  lastError         String?
+  providerCreatedAt DateTime?          @db.Timestamptz(3)
+  receivedAt        DateTime           @default(now()) @db.Timestamptz(3)
+  processedAt       DateTime?          @db.Timestamptz(3)
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  /// Deduplicación. Es lo que convierte un reenvío del proveedor en un no-op.
+  @@unique([provider, providerEventId])
+  @@index([status, receivedAt])
+  @@map("webhook_events")
+}
+
+// ============================================================================
+// DOMINIO 10 — BIOMETRÍA (ADR-032)
+// ============================================================================
+
+/// Constancia de que un socio está enrolado. **NUNCA lleva la plantilla.**
+///
+/// El vector vive en el equipo de la SUCURSAL y no sale de ahí (ADR-014,
+/// confirmado por el dueño el 2026-09-25). Aquí solo está lo que la nube
+/// necesita para saber que existe, poder ordenar su borrado y demostrar que
+/// hubo consentimiento.
+///
+/// Cada columna responde a una obligación concreta, no a una comodidad.
+model BiometricEnrollment {
+  id             String            @id @db.Uuid
+  organizationId String            @db.Uuid
+  memberId       String            @db.Uuid
+  modality       BiometricModality
+  /// Dónde vive la plantilla. Sin esto no se puede ordenar que se borre.
+  branchId       String            @db.Uuid
+
+  /// Referencia opaca de la plantilla EN EL EQUIPO de la sucursal.
+  /// No es el vector: es cómo pedirle al gateway que lo borre.
+  templateRef      String
+  /// Las plantillas NO son portables entre algoritmos: hay que saber cuál
+  /// produjo esta, o al cambiar de motor no se sabe a quién re-enrolar.
+  algorithmVendor  String
+  algorithmVersion String?
+
+  /// OBLIGATORIO (ADR-014). El indicador "socios con biométrico sin
+  /// consentimiento = 0" es incomputable sin esta relación, y un
+  /// enrolamiento sin ella es el pasivo heredado que ADR-014 llama el
+  /// riesgo principal — recreado a mano.
+  consentId String @db.Uuid
+
+  enrolledByUserId String    @db.Uuid
+  enrolledAt       DateTime  @default(now()) @db.Timestamptz(3)
+  revokedAt        DateTime? @db.Timestamptz(3)
+  revokedReason    String?
+
+  /// Cuándo CONFIRMÓ la sucursal que borró la plantilla. Nulo con
+  /// `revokedAt` puesto y el plazo vencido = obligación incumplida, y el job
+  /// diario tiene que verlo.
+  templateDeletedAt DateTime? @db.Timestamptz(3)
+
+  faceTemplate FaceTemplate?
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  member       Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "enrollments_member_same_org_fk")
+  branch       Branch        @relation("EnrollmentBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "enrollments_branch_same_org_fk")
+  consent      MemberConsent @relation(fields: [consentId], references: [id])
+
+  // -- SQL: UNIQUE (memberId, branchId, modality) WHERE revokedAt IS NULL
+  //         ^^^ un solo enrolamiento vivo por socio, sede y modalidad
+  // -- SQL: CHECK ((revokedAt IS NULL) = (revokedReason IS NULL))
+  // -- SQL: CHECK (templateDeletedAt IS NULL OR revokedAt IS NOT NULL)
+  //         ^^^ no se borra la plantilla de un enrolamiento vivo
+  @@index([organizationId, memberId, modality])
+  @@index([organizationId, branchId, revokedAt])
+  /// Pendientes de borrado: el job los busca por aquí.
+  @@index([revokedAt, templateDeletedAt])
+  @@map("biometric_enrollments")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ENTRENAMIENTO · RUTINAS
+//
+// Adelantado de V1 a pedido del dueño (docs/03 §5.8). Versión mínima: catálogo
+// de ejercicios, rutina por días y su asignación al socio, que la ve en su
+// teléfono. El registro de series y pesos (SetLog) queda para después.
+// ════════════════════════════════════════════════════════════════════════════
+
+enum MuscleGroup {
+  CHEST
+  BACK
+  SHOULDERS
+  BICEPS
+  TRICEPS
+  LEGS
+  GLUTES
+  ABS
+}
+
+/// Ejercicio del catálogo. `organizationId` NULO = catálogo GLOBAL de la
+/// plataforma (los precargados), de solo lectura para el gimnasio; cada
+/// gimnasio agrega los suyos. Toda consulta filtra organizationId IN (el
+/// suyo, NULL).
+model Exercise {
+  id             String      @id @db.Uuid
+  organizationId String?     @db.Uuid
+  /// Solo los globales: clave estable para sembrar sin duplicar (PECHO-01).
+  code           String?     @unique
+  name           String
+  muscleGroup    MuscleGroup
+  equipment      String?
+  instructions   String?
+  isActive       Boolean     @default(true)
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+
+  organization Organization?         @relation(fields: [organizationId], references: [id])
+  items        WorkoutTemplateItem[]
+
+  @@index([organizationId, muscleGroup])
+  @@map("exercises")
+}
+
+/// La rutina que arma el coach. Los días viven en `dayNames` (1..7, en orden).
+model WorkoutTemplate {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  name            String
+  /// FUERZA · HIPERTROFIA · RESISTENCIA · PERDIDA_PESO · GENERAL
+  goal            String?
+  /// PRINCIPIANTE · INTERMEDIO · AVANZADO
+  level           String?
+  notes           String?
+  dayNames        String[]
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  archivedAt      DateTime? @db.Timestamptz(3)
+  /// Copia personal de un socio («Personalizar para…», bloque 2.6): no sale en el catálogo.
+  personalForMemberId String? @db.Uuid
+
+  organization Organization          @relation(fields: [organizationId], references: [id])
+  items        WorkoutTemplateItem[]
+  assignments  WorkoutAssignment[]
+
+  @@unique([id, organizationId], map: "workout_templates_id_org_key")
+  @@index([organizationId, archivedAt])
+  @@index([organizationId, personalForMemberId])
+  @@map("workout_templates")
+}
+
+model WorkoutTemplateItem {
+  id                String  @id @db.Uuid
+  workoutTemplateId String  @db.Uuid
+  exerciseId        String  @db.Uuid
+  /// 1..7: el día de la rutina, no el de la semana.
+  dayIndex          Int
+  orderIndex        Int
+  sets              Int
+  /// "10-12", "15", "al fallo", "30 s".
+  reps              String
+  restSeconds       Int?
+  notes             String?
+
+  template WorkoutTemplate @relation(fields: [workoutTemplateId], references: [id], onDelete: Cascade)
+  exercise Exercise        @relation(fields: [exerciseId], references: [id])
+
+  @@unique([workoutTemplateId, dayIndex, orderIndex])
+  @@map("workout_template_items")
+}
+
+/// La rutina ASIGNADA a un socio. Una sola activa a la vez (índice parcial).
+model WorkoutAssignment {
+  id                String    @id @db.Uuid
+  organizationId    String    @db.Uuid
+  memberId          String    @db.Uuid
+  workoutTemplateId String    @db.Uuid
+  assignedByUserId  String    @db.Uuid
+  notes             String?
+  assignedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  endedAt           DateTime? @db.Timestamptz(3)
+  /// Cuándo toca revisarla («Revisar en» 4, 6 u 8 semanas; bloque 2.6). Nula en las de antes.
+  reviewOn          DateTime? @db.Date
+  /// Quién la terminó (al quitarla o al reemplazarla).
+  endedByUserId     String?   @db.Uuid
+
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  member       Member          @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "workout_assignments_member_same_org_fk")
+  template     WorkoutTemplate @relation(fields: [workoutTemplateId, organizationId], references: [id, organizationId], map: "workout_assignments_template_same_org_fk")
+  logs         WorkoutLog[]
+
+  // -- SQL: UNIQUE (memberId) WHERE endedAt IS NULL
+  @@index([organizationId, memberId, endedAt])
+  @@map("workout_assignments")
+}
+
+/// Un día de la rutina que el socio marcó como hecho («Marcar día hecho», bloque 2.6).
+/// «Hoy toca» es el día siguiente al último marcado. Uno por día de rutina y fecha.
+model WorkoutLog {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  memberId       String   @db.Uuid
+  assignmentId   String   @db.Uuid
+  /// 1..7: el día de la rutina, no el de la semana.
+  dayIndex       Int
+  /// El día de operación (zona del gimnasio) en que lo hizo.
+  doneOn         DateTime @db.Date
+  /// PORTAL (lo marcó el socio) · COACH.
+  source         String   @default("PORTAL")
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  assignment WorkoutAssignment @relation(fields: [assignmentId], references: [id])
+
+  @@unique([assignmentId, dayIndex, doneOn])
+  @@index([organizationId, memberId, doneOn])
+  @@map("workout_logs")
+}
+
+/// IMPORTACIÓN DE SOCIOS (docs/09 §3–4). Un archivo del sistema anterior
+/// entra aquí en crudo y limpio, se compara contra los socios existentes y
+/// entre sus propias filas, una persona del gimnasio revisa lo dudoso y solo
+/// entonces se aplica. Nada toca `members` hasta el paso de aplicar.
+model MemberImport {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  /// Sucursal de casa de quien no trae una reconocible en el archivo.
+  branchId        String    @db.Uuid
+  fileName        String
+  /// REVIEW (en revisión) → APPLIED, o CANCELED. Aplicar va por lotes y se puede reanudar.
+  status          String    @default("REVIEW")
+  /// Fecha de corte del saldo inicial: el día que se congeló el sistema anterior.
+  cutoffDate      DateTime  @db.Date
+  /// { "Mensualidad": "<planId>" | null }: a qué plan de GymFlow va cada plan del archivo.
+  planMap         Json      @default("{}")
+  /// { "CENTRO": "<branchId>" }: a qué sucursal va cada sucursal del archivo.
+  branchMap       Json      @default("{}")
+  totalRows       Int
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  appliedAt       DateTime? @db.Timestamptz(3)
+  appliedByUserId String?   @db.Uuid
+  canceledAt      DateTime? @db.Timestamptz(3)
+  reason          String?
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "member_imports_organization_fk")
+  rows         MemberImportRow[]
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("member_imports")
+}
+
+model MemberImportRow {
+  id                  String    @id @db.Uuid
+  organizationId      String    @db.Uuid
+  importId            String    @db.Uuid
+  /// Renglón del archivo (2 = el primero después del encabezado).
+  rowNumber           Int
+  /// Lo que traía el archivo, sin tocar: para revisar y para reclamaciones.
+  raw                 Json
+  firstName           String
+  lastName            String
+  phoneE164           String?
+  email               String?
+  curp                String?
+  birthDate           DateTime? @db.Date
+  joinedAt            DateTime? @db.Date
+  periodEnd           DateTime? @db.Date
+  legacyCode          String?
+  branchLabel         String?
+  planLabel           String?
+  notes               String?
+  /// Positivo = debe; negativo = a favor.
+  balanceCents        BigInt?
+  problems            Json      @default("[]")
+  /// NEW · MATCH (es un socio existente, señal fuerte) · REVIEW (dudoso) ·
+  /// FILE_DUP (repetido dentro del archivo) · INVALID (no se puede importar).
+  kind                String
+  matchMemberId       String?   @db.Uuid
+  matchRowId          String?   @db.Uuid
+  matchScore          Int?
+  matchReason         String?
+  /// PENDING (falta que una persona decida) · CREATE · MERGE · SKIP.
+  decision            String
+  decidedByUserId     String?   @db.Uuid
+  decidedAt           DateTime? @db.Timestamptz(3)
+  appliedMemberId     String?   @db.Uuid
+  appliedAt           DateTime? @db.Timestamptz(3)
+  /// Lo que pasó al aplicar ("ya tenía membresía vigente: no se creó otra").
+  applyNote           String?
+  /// Saldo inicial que esta fila DE VERDAD cargó (+ debe, − a favor). Null si
+  /// no cargó ninguno: sin saldo, sin ese dato, o porque el socio ya tenía el
+  /// de ese registro del sistema anterior (D18-01: reimportar no duplica dinero).
+  balanceLoadedCents  BigInt?
+  /// Saldo, vigencia o fecha de alta que venían y no se entendieron (D18-02):
+  /// `[{ field, value, problem }]`.
+  doubtful            Json      @default("[]")
+  /// Qué se decidió con esos datos: PENDING (falta) · WITHOUT (entra sin el
+  /// dato) · FIXED (una persona escribió el valor). Null = no trae datos dudosos.
+  dataStatus          String?
+  dataDecidedByUserId String?   @db.Uuid
+  dataDecidedAt       DateTime? @db.Timestamptz(3)
+
+  import MemberImport @relation(fields: [importId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "member_import_rows_import_fk")
+
+  @@unique([importId, rowNumber])
+  @@index([importId, kind])
+  @@index([importId, decision])
+  // Los saldos iniciales que ya recibió un socio, en todas sus importaciones.
+  @@index([organizationId, appliedMemberId])
+  @@map("member_import_rows")
+}
+
+/// Códigos del sistema anterior. Se conservan TODOS y son buscables (docs/09
+/// §4.4): el socio sigue diciendo "soy el 331" durante meses. También hacen
+/// que volver a importar el mismo archivo reconozca a cada quien.
+model MemberLegacyCode {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  memberId       String   @db.Uuid
+  code           String
+  /// De dónde viene el código: la sucursal del archivo o "general".
+  source         String
+  importId       String?  @db.Uuid
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "member_legacy_codes_member_fk")
+
+  @@unique([organizationId, source, code])
+  @@index([organizationId, code])
+  @@index([memberId])
+  @@map("member_legacy_codes")
+}
+
+/// Avisos al socio (PS-03): lo que el portal le dice sin canal externo. El
+/// job diario los crea con una clave de deduplicación; el socio los marca leídos.
+model MemberNotice {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  memberId       String    @db.Uuid
+  /// PAYMENT_DUE_SOON · PAYMENT_OVERDUE · CLASS_TOMORROW · INTAKE_APPROVED · PRIVACY_NOTICE_UPDATED · NEW_DEVICE · MEMBERSHIP_SUSPENDED
+  kind           String
+  title          String
+  body           String
+  /// Evita el mismo aviso dos veces: `PAYMENT_DUE_SOON:<chargeId>`.
+  dedupeKey      String
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  readAt         DateTime? @db.Timestamptz(3)
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "notices_member_same_org_fk")
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, dedupeKey], map: "member_notices_org_dedupe_key")
+  @@index([organizationId, memberId, createdAt])
+  @@map("member_notices")
+}
+
+/// Solicitudes ARCO (PS-07): la ley da plazo a cada una; sin fecha de entrada no
+/// hay forma de demostrar que se respondió a tiempo.
+model PrivacyRequest {
+  id               String    @id @db.Uuid
+  organizationId   String    @db.Uuid
+  memberId         String    @db.Uuid
+  /// ACCESS · RECTIFICATION · CANCELLATION · OPPOSITION · REVOCATION
+  kind             String
+  /// FRONT_DESK · PORTAL · EMAIL · WRITTEN
+  channel          String
+  note             String?
+  receivedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  /// 20 días hábiles según LFPDPPP art. 32; se guarda ya calculado.
+  dueAt            DateTime  @db.Timestamptz(3)
+  resolvedAt       DateTime? @db.Timestamptz(3)
+  resolvedByUserId String?   @db.Uuid
+  resolution       String?
+  createdByUserId  String?   @db.Uuid
+  /// El permiso del que se opone o que revoca (OPPOSITION y REVOCATION).
+  consentType              String?
+  /// Sin identidad acreditada el plazo no corre (correo o escrito; 21-18).
+  identityVerifiedAt       DateTime? @db.Timestamptz(3)
+  identityVerifiedByUserId String?   @db.Uuid
+  identityNote             String?
+  /// GRANTED (procede) · DENIED (no procede). Null en las resueltas antes del ciclo completo.
+  outcome                  String?
+  /// 15 días hábiles para hacer efectivo lo que procede; se guarda ya calculado.
+  effectiveDueAt           DateTime? @db.Timestamptz(3)
+  effectedAt               DateTime? @db.Timestamptz(3)
+  effectedByUserId         String?   @db.Uuid
+  effectNote               String?
+
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "privacy_requests_member_same_org_fk")
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: CHECK kind IN (...), CHECK channel IN (...), CHECK outcome, CHECK consentType, CHECK del ciclo
+  // -- SQL: índice parcial (organizationId, effectedAt, effectiveDueAt) WHERE outcome = 'GRANTED'
+  @@index([organizationId, resolvedAt, dueAt])
+  @@index([organizationId, memberId])
+  @@map("privacy_requests")
+}
+
+/// Suscripciones Web Push del personal (DP-10): la firma llega al teléfono del
+/// dueño aunque el panel esté cerrado. Sin proveedor externo (VAPID propio).
+model PushSubscription {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  userId         String    @db.Uuid
+  endpoint       String    @unique
+  p256dh         String
+  auth           String
+  userAgent      String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastUsedAt     DateTime? @db.Timestamptz(3)
+  /// El navegador respondió 404/410: la suscripción murió y se borra en el siguiente envío.
+  failedAt       DateTime? @db.Timestamptz(3)
+
+  user         User         @relation(fields: [userId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, userId])
+  @@map("push_subscriptions")
+}
+
+/// Cierre de mes (fase 4): la foto de Entró / Ganado / Gastos por sede que
+/// firma el dueño. Lo que llegue después se reconoce en el mes corriente como
+/// "ajuste de meses anteriores": el Tablero no reescribe agosto.
+model MonthlyClose {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  /// Primer día del mes cerrado (UTC).
+  month          DateTime @db.Date
+  /// Totales de la organización y por sede, en centavos como texto (ADR-005).
+  totals         Json
+  byBranch       Json
+  closedByUserId String   @db.Uuid
+  /// Quién firmó el cierre (la segunda firma). Null si cerró el dueño con su
+  /// propia contraseña (sin gerente, D-23) o en fotos anteriores al bloque 1.9.
+  approvedByUserId String?  @db.Uuid
+  closedAt       DateTime @default(now()) @db.Timestamptz(3)
+  note           String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, month], map: "monthly_closes_org_month_key")
+  @@map("monthly_closes")
+}
+
+/// Seguimiento (UX7): cada contacto con un prospecto o con un socio en riesgo,
+/// con su resultado y el próximo paso. Solo se agrega (GRANT SELECT, INSERT).
+model FollowUp {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  branchId        String?   @db.Uuid
+  prospectId      String?   @db.Uuid
+  memberId        String?   @db.Uuid
+  /// CALL · WHATSAPP · VISIT · OTHER
+  channel         String
+  /// ANSWERED · NO_ANSWER · INTERESTED · NOT_INTERESTED · COMING_BACK · TRIAL_VISIT · INTAKE_SENT (los dos últimos, solo de un interesado)
+  /// · MESSAGE_SENT (solo lo anota la bandeja de salida al mandar un «te extrañamos»)
+  outcome         String
+  note            String?
+  nextStepOn      DateTime? @db.Date
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  prospect     Prospect?    @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  member       Member?      @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "follow_ups_member_same_org_fk")
+
+  @@index([organizationId, prospectId, createdAt], map: "follow_ups_org_prospect_idx")
+  @@index([organizationId, memberId, createdAt], map: "follow_ups_org_member_idx")
+  @@map("follow_ups")
+}
+
+/// BANDEJA DE SALIDA (auditoría 8, fase 2, bloque 2.9; 25-10, 15-08, 28-14): un
+/// mensaje que el gimnasio le debe a un socio. Lo genera el job
+/// `outbound.generate` y recepción lo manda con un toque (enlace `wa.me`):
+/// nada sale solo (D-34). El texto se arma al leer y se congela en `body` al
+/// mandarlo.
+model OutboundMessage {
+  id               String    @id @db.Uuid
+  organizationId   String    @db.Uuid
+  /// La sede de casa del socio cuando nació el mensaje (la lista mira la de HOY).
+  branchId         String?   @db.Uuid
+  memberId         String    @db.Uuid
+  /// MEMBERSHIP_SUSPENDED · PAYMENT_OVERDUE · PAYMENT_DUE_SOON · MEMBERSHIP_ENDING · WE_MISS_YOU
+  kind             String
+  /// WHATSAPP_LINK (el enlace que abre recepción). Un proveedor sería otro valor.
+  channel          String    @default("WHATSAPP_LINK")
+  /// PENDING · SENT · DISMISSED · EXPIRED
+  status           String    @default("PENDING")
+  /// Evita el mismo mensaje dos veces: `PAYMENT_OVERDUE:<chargeId>`, `WE_MISS_YOU:<memberId>:<estado>:<AAAA-MM>`.
+  dedupeKey        String
+  /// El hecho: el cargo (pago por vencer o vencido) o la membresía (suspendida, por terminar). Sin FK: solo se lee.
+  chargeId         String?   @db.Uuid
+  membershipId     String?   @db.Uuid
+  /// Solo WE_MISS_YOU: ONBOARDING_AT_RISK · SLIPPING · DORMANT (de ahí sale la plantilla).
+  engagementState  String?
+  /// Lo que se mandó, tal cual. NULL mientras no se mande.
+  body             String?
+  /// Por qué caducó: FACT_GONE · SUPERSEDED · STALE · NO_PHONE.
+  closeReason      String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  resolvedAt       DateTime? @db.Timestamptz(3)
+  resolvedByUserId String?   @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "outbound_messages_member_same_org_fk")
+
+  @@unique([organizationId, dedupeKey], map: "outbound_messages_org_dedupe_key")
+  @@index([organizationId, status, kind], map: "outbound_messages_org_status_idx")
+  @@index([organizationId, memberId, createdAt], map: "outbound_messages_org_member_idx")
+  @@map("outbound_messages")
+}
+
+/// Plantilla facial de la cámara de recepción (2026-10-09): el embedding
+/// cifrado, ligado a su enrolamiento (y por él, a su consentimiento). Se borra
+/// al revocar el enrolamiento.
+model FaceTemplate {
+  enrollmentId       String   @id @db.Uuid
+  organizationId     String   @db.Uuid
+  branchId           String   @db.Uuid
+  memberId           String   @db.Uuid
+  embeddingEncrypted String
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+
+  enrollment   BiometricEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade, map: "face_templates_enrollment_fk")
+  organization Organization        @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, branchId], map: "face_templates_org_branch_idx")
+  @@map("face_templates")
+}
+
+/// MEDICIÓN DEL RECONOCIMIENTO (auditoría 8, bloque 2.3; 6-10). Un intento de
+/// «es» (socio con rostro) o «no es» (alguien que no es socio) frente a la
+/// cámara, para fijar el umbral con datos del gimnasio. Solo parecidos: nunca
+/// la foto ni la plantilla. `kind` y su relación con `memberId` van con CHECK
+/// en la migración.
+model FaceMeasurement {
+  id               String   @id @db.Uuid
+  organizationId   String   @db.Uuid
+  branchId         String   @db.Uuid
+  kind             String
+  memberId         String?  @db.Uuid
+  ownScore         Float?
+  bestOtherScore   Float?
+  compared         Int      @default(0)
+  recordedByUserId String?  @db.Uuid
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, createdAt], map: "face_measurements_org_created_idx")
+  @@map("face_measurements")
+}
+
+/// CADENA DE PLATAFORMA (auditoría 8, 24-19 y 23-09; bloque 1.11). Lo que
+/// GymFlow hace desde su consola, en UNA cadena de hashes propia: el espejo
+/// enlazado de cada asiento `platform.*` de las marcas y lo que solo pasa en
+/// la consola (entrar, reconfirmar, planes y precios). Append-only por trigger.
+model PlatformAuditLog {
+  id                    String   @id @db.Uuid
+  /// La cuenta de plataforma que actuó; null = el sistema (un job).
+  actorUserId           String?  @db.Uuid
+  action                String
+  /// La marca sobre la que se actuó, si la hay.
+  organizationId        String?  @db.Uuid
+  resourceType          String
+  resourceId            String?
+  beforeState           Json?
+  afterState            Json?
+  reason                String?
+  /// Enlace con la cadena de la marca: el asiento espejo y su hash.
+  organizationAuditId   String?  @unique @db.Uuid
+  organizationAuditHash String?
+  ip                    String?
+  userAgent             String?
+  sessionId             String?  @db.Uuid
+  requestId             String?
+  prevHash              String?
+  hash                  String
+  /// Cuándo pasó (igual a `at` salvo en lo importado de antes de la cadena).
+  occurredAt            DateTime @db.Timestamptz(3)
+  at                    DateTime @default(now()) @db.Timestamptz(3)
+
+  // -- SQL: REVOKE UPDATE, DELETE ON platform_audit_logs FROM gymflow_app
+  @@index([at(sort: Desc), id(sort: Desc)], map: "platform_audit_logs_chain_tip_idx")
+  @@index([organizationId, at(sort: Desc)])
+  @@map("platform_audit_logs")
+}

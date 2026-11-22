@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+# El pipeline MÁS IMPORTANTE del proyecto.
+#
+# Reproduce TODO el historial de migraciones sobre una base vacía. Es lo único
+# que detecta que las migraciones están fuera de orden o que una no es
+# reproducible — el defecto que encontramos en el Sprint 5 y que habría hecho
+# fallar el primer despliegue a producción. Ninguna revisión humana lo pilla;
+# esto lo pilla en treinta segundos.
+#
+# ACCESO ENTRE REPOSITORIOS: `gymflow-core` es público, así que se baja sin
+# clave ni token.
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      DATABASE_URL: postgresql://gymflow_app:gymflow_app_ci@localhost:5432/gymflow_dev?schema=public
+      DATABASE_URL_MIGRATOR: postgresql://gymflow_owner:gymflow_owner_ci@localhost:5432/gymflow_dev?schema=public
+      SHADOW_DATABASE_URL: postgresql://gymflow_owner:gymflow_owner_ci@localhost:5432/gymflow_shadow?schema=public
+      GYMFLOW_OWNER_PASSWORD: gymflow_owner_ci
+      GYMFLOW_APP_PASSWORD: gymflow_app_ci
+
+    steps:
+      # Los dos repositorios se clonan DENTRO del workspace, uno al lado del
+      # otro: `actions/checkout` no admite rutas fuera de él, y `link:` necesita
+      # que sean hermanos.
+      - uses: actions/checkout@v4
+        with: { path: gymflow-db }
+      - uses: actions/checkout@v4
+        with:
+          repository: IsraelRomeroF/gymflow-core
+          path: gymflow-core
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.26.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Construir el dominio
+        working-directory: gymflow-core
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Instalar
+        working-directory: gymflow-db
+        run: pnpm install --frozen-lockfile
+
+      - name: Preparar el clúster
+        working-directory: gymflow-db
+        run: node scripts/bootstrap-db.mjs
+
+      - name: REPLAY del historial completo sobre base vacía
+        working-directory: gymflow-db
+        run: pnpm exec prisma migrate deploy
+
+      - name: Sin deriva entre el esquema y las migraciones
+        working-directory: gymflow-db
+        run: |
+          pnpm exec prisma generate
+          DIFF=$(pnpm exec prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema prisma/schema.prisma --script 2>/dev/null \
+            | grep -v '^--' | grep -v '^$' || true)
+          if [ -n "$DIFF" ]; then
+            echo "El esquema y las migraciones no coinciden:"; echo "$DIFF"; exit 1
+          fi
+
+      - name: Verificar
+        working-directory: gymflow-db
+        run: pnpm typecheck && pnpm lint && pnpm build
+
+      - name: Inventario de garantías del esquema
+        working-directory: gymflow-db
+        run: node scripts/verify-schema.mjs
