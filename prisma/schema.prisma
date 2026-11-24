@@ -182,6 +182,8 @@ model Organization {
   modules                OrganizationModule[]
   entitlements           OrganizationEntitlement[]
   platformInvoices       PlatformInvoice[]
+  /// Descuentos o precio especial de su factura de GymFlow (D-39, bloque 4.9).
+  billingAdjustments     OrganizationBillingAdjustment[]
   memberImports          MemberImport[]
   users                  User[]
   roles                  Role[]
@@ -229,6 +231,10 @@ model Organization {
   memberContactChanges          MemberContactChange[]
   prospectSources        ProspectSource[]
   prospectAutoCloseStart ProspectAutoCloseStart?
+  // Bloque 4.2 (D-05): avisos a la dueña, su arranque y qué apagó cada quien.
+  ownerAlerts            OwnerAlert[]
+  ownerAlertStart        OwnerAlertStart?
+  pushPreferences        PushPreference[]
   faceTemplates          FaceTemplate[]
   faceMeasurements       FaceMeasurement[]
   trialPasses            TrialPass[]
@@ -334,6 +340,7 @@ model User {
   mfaFactors        MfaFactor[]
   auditLogs         AuditLog[]         @relation("AuditActor")
   pushSubscriptions PushSubscription[]
+  pushPreferences   PushPreference[]
   /// Bloque 3.1: nombramientos de apoderado que dio (dueño) y que recibió, y sus equipos conocidos.
   approvalProxiesGranted ApprovalProxy[] @relation("ApprovalProxyGrantor")
   approvalProxiesHeld    ApprovalProxy[] @relation("ApprovalProxyHolder")
@@ -852,6 +859,19 @@ model PlatformInvoice {
   /// Lo pagado hasta hoy: la suma de sus pagos vivos (bloque 1.13, 23-08).
   /// `paidAt`, `paymentMethod` y `paymentRef` son los del último pago vivo.
   paidCents       BigInt    @default(0)
+  // Bloque 4.9 (D-39). `totalCents` sigue siendo LO QUE SE PAGA. Una factura
+  // anterior a D-39 tiene `subtotalCents` NULL: total sin desglose de IVA.
+  subtotalCents   BigInt?
+  taxCents        BigInt    @default(0)
+  /// Puntos base: 1600 = 16 %. 0 = sin IVA.
+  taxRateBps      Int       @default(0)
+  /// Los precios ya incluían el IVA (el total no subió; solo se desglosó).
+  taxIncluded     Boolean   @default(false)
+  /// El descuento que llevó; también va como renglón en `lines`, en negativo.
+  discountCents   BigInt    @default(0)
+  /// { legalName, rfc, tradeName } del gimnasio y { legalName, rfc, address, payment, contact } de GymFlow, como estaban al emitir.
+  receiver        Json?
+  issuer          Json?
 
   organization Organization      @relation(fields: [organizationId], references: [id])
   payments     PlatformPayment[]
@@ -860,6 +880,7 @@ model PlatformInvoice {
   // -- SQL: UNIQUE (organizationId, periodStart) WHERE status <> 'VOID'
   //         ^^^ una factura VIVA por mes y marca: la anulada no estorba para emitir otra (DP-03).
   // -- SQL: CHECK (paidCents BETWEEN 0 AND totalCents); CHECK (status <> 'PAID' OR paidCents = totalCents)
+  // -- SQL: CHECK (taxCents >= 0 AND discountCents >= 0 AND (subtotalCents IS NULL OR subtotalCents + taxCents = totalCents))
   @@index([organizationId, status])
   @@index([status, dueDate])
   @@map("platform_invoices")
@@ -868,6 +889,55 @@ model PlatformInvoice {
 /// PAGOS de una factura de la plataforma (auditoría 8, bloque 1.13; 23-07 y
 /// 23-08): uno por abono, con su importe, su forma y su referencia. Un pago
 /// registrado por error se DESHACE con motivo (`undoneAt`); nunca se borra.
+/// Descuento o precio especial de una marca en su factura de GymFlow, por
+/// meses y con motivo (D-39, bloque 4.9). Caduca solo; no se edita ni se
+/// borra: se cancela y se da otro.
+model OrganizationBillingAdjustment {
+  id               String    @id @db.Uuid
+  organizationId   String    @db.Uuid
+  /// PERCENT (`percentBps`: 2000 = 20 %) · AMOUNT (importe fijo al mes) · SPECIAL_PRICE (la mensualidad completa, sin IVA, cuesta `amountCents`).
+  kind             String
+  percentBps       Int?
+  amountCents      BigInt?
+  /// Día 1 del mes de la primera factura con el ajuste.
+  fromMonth        DateTime  @db.Date
+  /// Cuántas facturas mensuales lo llevan.
+  months           Int
+  /// Sale en el renglón de la factura.
+  reason           String
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  createdByUserId  String?   @db.Uuid
+  canceledAt       DateTime? @db.Timestamptz(3)
+  canceledByUserId String?   @db.Uuid
+  cancelReason     String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  // -- SQL: CHECK por clase, día 1, 1 a 24 meses, motivo; REVOKE DELETE
+  @@index([organizationId, fromMonth], map: "organization_billing_adjustments_org_idx")
+  @@map("organization_billing_adjustments")
+}
+
+/// El IVA de las facturas de GymFlow desde la de un mes (D-39, bloque 4.9).
+/// Sin filas no hay IVA. Para un mes manda la fila viva más reciente que ya empezó.
+model PlatformTaxChange {
+  id               String    @id @db.Uuid
+  /// Puntos base: 1600 = 16 %; 0 = sin IVA.
+  rateBps          Int
+  /// Falso: se suma a los precios (el total sube). Verdadero: los precios ya lo incluyen (solo se desglosa).
+  included         Boolean   @default(false)
+  effectiveFrom    DateTime  @db.Date
+  announcedOn      DateTime  @db.Date
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  createdByUserId  String?   @db.Uuid
+  canceledAt       DateTime? @db.Timestamptz(3)
+  canceledByUserId String?   @db.Uuid
+  cancelReason     String?
+
+  // -- SQL: CHECK tasa 0 a 5000, día 1; UNIQUE (effectiveFrom) WHERE canceledAt IS NULL; REVOKE DELETE
+  @@map("platform_tax_changes")
+}
+
 model PlatformPayment {
   id              String    @id @db.Uuid
   invoiceId       String    @db.Uuid
@@ -902,6 +972,9 @@ model OrganizationEntitlement {
   reason          String?
   updatedAt       DateTime @default(now()) @db.Timestamptz(3)
   updatedByUserId String?  @db.Uuid
+  /// Desde qué día está contratado un módulo agregado después del alta (D-39,
+  /// bloque 4.9): de ahí sale el cobro por días. NULL = desde que la marca empezó.
+  contractedOn    DateTime? @db.Date
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
@@ -3750,6 +3823,70 @@ model PushSubscription {
 
   @@index([organizationId, userId])
   @@map("push_subscriptions")
+}
+
+/// AVISOS A LA DUEÑA (bloque 4.2; D-05). Cada aviso que el sistema le da (caja
+/// sin cortar, corte con diferencia por revisar…) y cada resumen del lunes: lo
+/// que se ve dentro del panel aunque el teléfono no suene. `dedupeKey` impide
+/// mandar dos veces lo mismo. El texto no lleva nombres de socios.
+model OwnerAlert {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  /// Uno de `OWNER_ALERT_KINDS` del núcleo.
+  kind           String
+  dedupeKey      String
+  /// Sin FK: solo sirve para decir la sede.
+  branchId       String?   @db.Uuid
+  title          String
+  body           String
+  url            String
+  /// Renglones del detalle (`lines`) o las cifras del resumen (`figures`, `people`, `from`, `to`).
+  detail         Json      @default("{}")
+  occurredAt     DateTime  @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  /// Anotado sin sonar: ya estaba pendiente en la primera corrida del gimnasio.
+  silent         Boolean   @default(false)
+  pushedAt       DateTime? @db.Timestamptz(3)
+  pushDevices    Int       @default(0)
+  seenAt         DateTime? @db.Timestamptz(3)
+  seenByUserId   String?   @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: la aplicación no borra (REVOKE DELETE).
+  @@unique([organizationId, dedupeKey], map: "owner_alerts_org_dedupe_key")
+  @@index([organizationId, createdAt], map: "owner_alerts_org_created_idx")
+  @@index([organizationId, kind, createdAt], map: "owner_alerts_org_kind_idx")
+  @@map("owner_alerts")
+}
+
+/// Desde qué instante avisa cada gimnasio (bloque 4.2): lo escribe la primera
+/// corrida de `audit.anomaly-scan`; lo anterior no se manda. Solo se inserta y se lee.
+model OwnerAlertStart {
+  organizationId String   @id @db.Uuid
+  startedAt      DateTime @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("owner_alert_starts")
+}
+
+/// Qué avisos apagó cada persona en su teléfono (bloque 4.2; D-05). Sin fila,
+/// encendido. Apagado, el aviso sigue saliendo dentro del panel. No se borra.
+model PushPreference {
+  userId         String   @db.Uuid
+  kind           String
+  organizationId String   @db.Uuid
+  enabled        Boolean  @default(true)
+  updatedAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, kind])
+  @@index([organizationId, kind], map: "push_preferences_org_kind_idx")
+  @@map("push_preferences")
 }
 
 /// Cierre de mes (fase 4): la foto de Entró / Ganado / Gastos por sede que
