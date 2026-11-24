@@ -130,74 +130,88 @@ enum AuditActorType {
 
 /// EL TENANT (ADR-001). El socio pertenece a la Organization, nunca a una sucursal.
 model Organization {
-  id              String    @id @db.Uuid
-  legalName       String
-  tradeName       String
+  consentSignatureRequests ConsentSignatureRequest[]
+  planPriceChanges         PlanPriceChange[]
+  privacyBatches           PrivacyBatch[]
+  privacyConservationStart PrivacyConservationStart?
+  id                       String                    @id @db.Uuid
+  legalName                String
+  tradeName                String
   /// Branch.timezone la sobrescribe: México eliminó el horario de verano
   /// SALVO en la franja fronteriza norte (ADR-006).
-  timezone        String    @default("America/Mexico_City")
-  defaultCurrency String    @default("MXN") @db.Char(3)
-  settings        Json      @default("{}")
+  timezone                 String                    @default("America/Mexico_City")
+  defaultCurrency          String                    @default("MXN") @db.Char(3)
+  settings                 Json                      @default("{}")
   /// Estado del SERVICIO, lo decide la plataforma (ADR-037): PENDING (dada de
   /// alta, sin liberar), ACTIVE (en uso) o SUSPENDED. Fuera de ACTIVE nadie
   /// de la marca entra: ni su personal ni sus socios.
-  serviceStatus   String    @default("ACTIVE")
-  activatedAt     DateTime? @db.Timestamptz(3)
-  suspendedAt     DateTime? @db.Timestamptz(3)
-  suspendedReason String?
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
-  deletedAt       DateTime? @db.Timestamptz(3)
+  serviceStatus            String                    @default("ACTIVE")
+  activatedAt              DateTime?                 @db.Timestamptz(3)
+  suspendedAt              DateTime?                 @db.Timestamptz(3)
+  suspendedReason          String?
+  createdAt                DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                  @updatedAt @db.Timestamptz(3)
+  deletedAt                DateTime?                 @db.Timestamptz(3)
 
   /// A quién le llega el estado de cuenta de la plataforma.
-  billingEmail       String?
+  billingEmail           String?
   /// Plan de la plataforma contratado (ADR-039): paquete de módulos con su
   /// precio mensual. NULL = contrato a la medida, módulo por módulo.
-  platformPlanId     String?                   @db.Uuid
-  platformPlan       PlatformPlan?             @relation(fields: [platformPlanId], references: [id])
-  branches           Branch[]
-  modules            OrganizationModule[]
-  entitlements       OrganizationEntitlement[]
-  platformInvoices   PlatformInvoice[]
-  memberImports      MemberImport[]
-  users              User[]
-  roles              Role[]
-  auditLogs          AuditLog[]
-  roleLimits         RoleLimitSet[]
-  members            Member[]
-  plans              Plan[]
-  charges            Charge[]
-  payments           Payment[]
-  billingCycles      BillingCycle[]
-  cashRegisters      CashRegister[]
-  products           Product[]
-  posSales           PosSale[]
-  gateways           AccessGateway[]
-  accessDecisions    AccessDecision[]
-  attendance         AttendanceEvent[]
-  credentials        MemberCredential[]
-  portalInvites      PortalInvite[]
-  portalSessions     MemberSession[]
-  consentDocs        ConsentDocument[]
-  intakes            MemberIntake[]
-  enrollments        BiometricEnrollment[]
-  classTypes         ClassType[]
-  classSettings      ClassSettings?
-  classPauses        ClassPause[]
-  paymentMethods     PaymentMethod[]
-  webhookEvents      WebhookEvent[]
-  exercises          Exercise[]
-  workoutTemplates   WorkoutTemplate[]
-  workoutAssignments WorkoutAssignment[]
-  memberNotices      MemberNotice[]
-  privacyRequests    PrivacyRequest[]
-  pushSubscriptions  PushSubscription[]
-  monthlyCloses      MonthlyClose[]
-  followUps          FollowUp[]
-  outboundMessages   OutboundMessage[]
-  prospectSources    ProspectSource[]
-  faceTemplates      FaceTemplate[]
-  faceMeasurements   FaceMeasurement[]
+  platformPlanId         String?                   @db.Uuid
+  platformPlan           PlatformPlan?             @relation(fields: [platformPlanId], references: [id])
+  /// La VERSIÓN del plan que esta marca tiene (D-38, bloque 3.11):
+  /// { planId, name, monthlyCents, modules, since }. El cobro lee esta, no el
+  /// catálogo vivo: un cambio de plan le llega en la fecha avisada.
+  platformPlanSnapshot   Json?
+  /// Prórroga (D-37): la suspensión automática por adeudo no la toca hasta ese día, incluido.
+  autoSuspendHoldUntil   DateTime?                 @db.Date
+  /// La suspensión vigente la hizo el sistema por falta de pago, no una persona.
+  suspendedAutomatically Boolean                   @default(false)
+  platformNotices        PlatformNotice[]
+  branches               Branch[]
+  modules                OrganizationModule[]
+  entitlements           OrganizationEntitlement[]
+  platformInvoices       PlatformInvoice[]
+  memberImports          MemberImport[]
+  users                  User[]
+  roles                  Role[]
+  auditLogs              AuditLog[]
+  roleLimits             RoleLimitSet[]
+  members                Member[]
+  plans                  Plan[]
+  charges                Charge[]
+  payments               Payment[]
+  billingCycles          BillingCycle[]
+  cashRegisters          CashRegister[]
+  products               Product[]
+  posSales               PosSale[]
+  gateways               AccessGateway[]
+  accessDecisions        AccessDecision[]
+  attendance             AttendanceEvent[]
+  credentials            MemberCredential[]
+  portalInvites          PortalInvite[]
+  portalSessions         MemberSession[]
+  consentDocs            ConsentDocument[]
+  intakes                MemberIntake[]
+  enrollments            BiometricEnrollment[]
+  classTypes             ClassType[]
+  classSettings          ClassSettings?
+  classPauses            ClassPause[]
+  paymentMethods         PaymentMethod[]
+  webhookEvents          WebhookEvent[]
+  exercises              Exercise[]
+  workoutTemplates       WorkoutTemplate[]
+  workoutAssignments     WorkoutAssignment[]
+  memberNotices          MemberNotice[]
+  privacyRequests        PrivacyRequest[]
+  pushSubscriptions      PushSubscription[]
+  monthlyCloses          MonthlyClose[]
+  followUps              FollowUp[]
+  outboundMessages       OutboundMessage[]
+  prospectSources        ProspectSource[]
+  faceTemplates          FaceTemplate[]
+  faceMeasurements       FaceMeasurement[]
+  trialPasses            TrialPass[]
 
   @@map("organizations")
 }
@@ -238,6 +252,7 @@ model Branch {
   gateways         AccessGateway[]
   accessDecisions  AccessDecision[]         @relation("AccessDecisionBranch")
   attendance       AttendanceEvent[]        @relation("AttendanceBranch")
+  trialPasses      TrialPass[]              @relation("TrialPassBranch")
   intakes          MemberIntake[]           @relation("IntakeBranch")
   enrollments      BiometricEnrollment[]    @relation("EnrollmentBranch")
   classTemplates   ClassTemplate[]          @relation("ClassTemplateBranch")
@@ -255,35 +270,36 @@ model Branch {
 
 /// Cuenta de acceso del PERSONAL. Un socio NO es un User (ADR-023).
 model User {
-  id                    String    @id @db.Uuid
+  privacyBatchesSigned  PrivacyBatch[] @relation("PrivacyBatchSigner")
+  id                    String         @id @db.Uuid
   /// Nullable SOLO para el superadmin de plataforma (cross-tenant).
-  organizationId        String?   @db.Uuid
+  organizationId        String?        @db.Uuid
   email                 String
   passwordHash          String
   fullName              String
   phoneE164             String?
-  mfaEnabled            Boolean   @default(false)
-  isActive              Boolean   @default(true)
-  lastLoginAt           DateTime? @db.Timestamptz(3)
-  failedLogins          Int       @default(0)
+  mfaEnabled            Boolean        @default(false)
+  isActive              Boolean        @default(true)
+  lastLoginAt           DateTime?      @db.Timestamptz(3)
+  failedLogins          Int            @default(0)
   /// Bloqueo temporal progresivo tras N fallos (§27).
-  lockedUntil           DateTime? @db.Timestamptz(3)
+  lockedUntil           DateTime?      @db.Timestamptz(3)
   /// La contraseña la puso otra persona (alta o restablecimiento): se cambia
   /// al entrar y, mientras tanto, no sirve para autorizar (SEC2-08).
-  mustChangePassword    Boolean   @default(false)
+  mustChangePassword    Boolean        @default(false)
   /// Secciones de Dirección y Cumplimiento que el dueño le liberó (claves de
   /// `LOCKABLE_SECTIONS`). Vacío = ninguna. El dueño no la necesita.
-  unlockedSections      Json      @default("[]")
+  unlockedSections      Json           @default("[]")
   /// Lo que la PLATAFORMA deja ver al dueño; null = todo. Mismas claves que la llave.
   platformSections      Json?
   /// Ajustes de permisos de esta persona sobre su puesto: { add, remove }, de
   /// la lista cerrada `ADJUSTABLE_PERMISSIONS`. null = exactamente su puesto.
   permissionOverrides   Json?
-  passwordResetAt       DateTime? @db.Timestamptz(3)
-  passwordResetByUserId String?   @db.Uuid
-  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
-  deletedAt             DateTime? @db.Timestamptz(3)
+  passwordResetAt       DateTime?      @db.Timestamptz(3)
+  passwordResetByUserId String?        @db.Uuid
+  createdAt             DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime       @updatedAt @db.Timestamptz(3)
+  deletedAt             DateTime?      @db.Timestamptz(3)
 
   organization      Organization?      @relation(fields: [organizationId], references: [id])
   roleAssignments   RoleAssignment[]   @relation("AssignmentUser")
@@ -429,38 +445,52 @@ model ApprovalGrant {
 /// importe; su token viaja cifrado aquí y se le entrega a quien la pidió
 /// mientras la firma no se use ni venza; después se borra (29-03).
 model ApprovalRequest {
-  id                String    @id @db.Uuid
-  organizationId    String    @db.Uuid
-  requestedByUserId String    @db.Uuid
+  id                String            @id @db.Uuid
+  organizationId    String            @db.Uuid
+  requestedByUserId String            @db.Uuid
   permission        String
-  branchId          String?   @db.Uuid
+  branchId          String?           @db.Uuid
   resourceType      String?
-  resourceId        String?   @db.Uuid
+  resourceId        String?           @db.Uuid
   amountCents       BigInt?
   /// Lo que verá quien autoriza: "Reembolso de $300 a Ana López".
   summary           String
   /// El motivo que escribió quien pide: quien firma lo lee antes de decidir (UXG-05).
   reason            String?
-  status            String    @default("PENDING")
-  approverUserId    String?   @db.Uuid
-  decidedAt         DateTime? @db.Timestamptz(3)
+  status            String            @default("PENDING")
+  approverUserId    String?           @db.Uuid
+  decidedAt         DateTime?         @db.Timestamptz(3)
   rejectReason      String?
   /// Token de la firma, CIFRADO, mientras la firma no se use ni venza: si se
   /// pierde la respuesta que lo trae, se vuelve a entregar (29-03).
   deliveryToken     String?
   /// La firma que emitió al aprobarse: dice si ya se usó o venció (29-03).
-  grantId           String?   @db.Uuid
+  grantId           String?           @db.Uuid
   /// A cuántos teléfonos salió el aviso al pedirla (29-05, bloque 2.10).
-  notifiedCount     Int       @default(0)
+  notifiedCount     Int               @default(0)
   /// Cuándo salió ese aviso; null si no salió ninguno.
-  deliveredAt       DateTime? @db.Timestamptz(3)
+  deliveredAt       DateTime?         @db.Timestamptz(3)
   /// La primera vez que la bandeja de alguien que puede firmarla la mostró (29-05).
-  seenAt            DateTime? @db.Timestamptz(3)
-  expiresAt         DateTime  @db.Timestamptz(3)
-  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  seenAt            DateTime?         @db.Timestamptz(3)
+  /// D-03 (bloque 3.2): la solicitud RECHAZADA de la misma operación a la que esta responde.
+  previousRequestId String?           @db.Uuid
+  previousRequest   ApprovalRequest?  @relation("ApprovalRequestReask", fields: [previousRequestId], references: [id], onDelete: SetNull)
+  nextRequests      ApprovalRequest[] @relation("ApprovalRequestReask")
+  /// Lo que quien pide le contesta a ese «no»: obligatorio para volver a pedir.
+  reply             String?
+  /// «Preguntar» en vez de rechazar: la solicitud sigue PENDING con la pregunta puesta.
+  question          String?
+  questionAt        DateTime?         @db.Timestamptz(3)
+  questionByUserId  String?           @db.Uuid
+  /// Lo que contestó quien pidió.
+  answer            String?
+  answeredAt        DateTime?         @db.Timestamptz(3)
+  expiresAt         DateTime          @db.Timestamptz(3)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(3)
 
   @@index([organizationId, status, expiresAt])
   @@index([organizationId, createdAt])
+  @@index([organizationId, permission, resourceId, createdAt], map: "approval_requests_operacion_idx")
   @@map("approval_requests")
 }
 
@@ -590,8 +620,77 @@ model PlatformPlan {
   updatedAt    DateTime @updatedAt @db.Timestamptz(3)
 
   organizations Organization[]
+  priceChanges  PlatformPriceChange[]
 
   @@map("platform_plans")
+}
+
+/// CAMBIO ANUNCIADO de un precio o de un plan de GymFlow (D-38, bloque 3.11):
+/// aplica a todas las marcas desde el día 1 de un mes, con un mes de aviso.
+/// Hasta entonces cada marca conserva lo que tenía. No se borra: de aquí sale
+/// lo que valía un mes pasado.
+model PlatformPriceChange {
+  id               String    @id @db.Uuid
+  /// PRICE (un precio suelto, `moduleKey`) o PLAN (precio y módulos de `planId`).
+  kind             String
+  moduleKey        String?
+  planId           String?   @db.Uuid
+  /// PRICE: { monthlyCents }. PLAN: { monthlyCents, modules }.
+  before           Json
+  after            Json
+  /// Día 1 del mes de la primera factura con lo nuevo.
+  effectiveFrom    DateTime  @db.Date
+  announcedOn      DateTime  @db.Date
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  createdByUserId  String?   @db.Uuid
+  appliedAt        DateTime? @db.Timestamptz(3)
+  canceledAt       DateTime? @db.Timestamptz(3)
+  canceledByUserId String?   @db.Uuid
+  cancelReason     String?
+
+  plan PlatformPlan? @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  // -- SQL: CHECK día 1, effectiveFrom > announcedOn, un solo pendiente por precio y por plan (índices únicos parciales); REVOKE DELETE
+  @@index([effectiveFrom], map: "platform_price_changes_effective_idx")
+  @@map("platform_price_changes")
+}
+
+/// AVISO de GymFlow al dueño de una marca (D-37, bloque 3.11): factura
+/// emitida, vencida, servicio suspendido, cambio de precio. `deliveredOn` es
+/// el primer día con constancia de que le llegó (notificación a su teléfono,
+/// visto en su panel o mandado por una persona de GymFlow): desde ahí cuenta
+/// la suspensión automática. No se borra.
+model PlatformNotice {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  /// INVOICE_ISSUED · INVOICE_OVERDUE · SERVICE_SUSPENDED · PRICE_CHANGE · PRICE_CHANGE_CANCELED
+  kind           String
+  dedupeKey      String    @unique(map: "platform_notices_dedupe_key")
+  invoiceId      String?   @db.Uuid
+  priceChangeId  String?   @db.Uuid
+  title          String
+  body           String
+  /// El día (Ciudad de México) en que nació.
+  noticeOn       DateTime  @db.Date
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  pushedAt       DateTime? @db.Timestamptz(3)
+  pushDevices    Int       @default(0)
+  seenAt         DateTime? @db.Timestamptz(3)
+  seenByUserId   String?   @db.Uuid
+  sentAt         DateTime? @db.Timestamptz(3)
+  sentByUserId   String?   @db.Uuid
+  deliveredOn    DateTime? @db.Date
+  /// Ya no hace falta: PAID · VOIDED · RESUMED · CANCELED · APPLIED.
+  closedAt       DateTime? @db.Timestamptz(3)
+  closeReason    String?
+
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  invoice      PlatformInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  // -- SQL: CHECK deliveredOn ⇔ alguna vía; REVOKE DELETE
+  @@index([organizationId, closedAt, createdAt], map: "platform_notices_org_idx")
+  @@index([invoiceId], map: "platform_notices_invoice_idx")
+  @@map("platform_notices")
 }
 
 model PlatformPrice {
@@ -632,6 +731,7 @@ model PlatformInvoice {
 
   organization Organization      @relation(fields: [organizationId], references: [id])
   payments     PlatformPayment[]
+  notices      PlatformNotice[]
 
   // -- SQL: UNIQUE (organizationId, periodStart) WHERE status <> 'VOID'
   //         ^^^ una factura VIVA por mes y marca: la anulada no estorba para emitir otra (DP-03).
@@ -708,23 +808,58 @@ model BranchModuleOverride {
 /// GASTOS FIJOS del gimnasio: renta, nómina, luz. Sin ellos "ganancia" era
 /// solo caja (UXB-02). Se registran por mes; no se borran, se anulan.
 model OperatingExpense {
-  id              String    @id @db.Uuid
-  organizationId  String    @db.Uuid
+  id               String             @id @db.Uuid
+  organizationId   String             @db.Uuid
   /// null = de todo el gimnasio (la nómina de oficina, el software).
-  branchId        String?   @db.Uuid
-  category        String
-  description     String
-  amountCents     BigInt
+  branchId         String?            @db.Uuid
+  category         String
+  description      String
+  amountCents      BigInt
   /// Primer día del mes al que corresponde.
-  periodMonth     DateTime  @db.Date
-  createdByUserId String    @db.Uuid
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  voidedAt        DateTime? @db.Timestamptz(3)
-  voidedByUserId  String?   @db.Uuid
-  voidReason      String?
+  periodMonth      DateTime           @db.Date
+  createdByUserId  String             @db.Uuid
+  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
+  voidedAt         DateTime?          @db.Timestamptz(3)
+  voidedByUserId   String?            @db.Uuid
+  voidReason       String?
+  /// D-22 (3.7): «ajuste de ‹mes›». El mes CERRADO al que corresponde; el gasto
+  /// cuenta en `periodMonth`, el mes en curso.
+  adjustsMonth     DateTime?          @db.Date
+  /// El gasto del mes cerrado que este ajuste corrige (va en negativo).
+  adjustsExpenseId String?            @db.Uuid
+  adjustsExpense   OperatingExpense?  @relation("ExpenseAdjustment", fields: [adjustsExpenseId], references: [id], onDelete: Restrict)
+  adjustedBy       OperatingExpense[] @relation("ExpenseAdjustment")
 
+  // -- SQL: CHECK amountCents > 0, o < 0 solo si corrige un gasto (adjustsExpenseId)
+  // -- SQL: UNIQUE (adjustsExpenseId) WHERE vigente: un gasto se corrige una vez
   @@index([organizationId, periodMonth])
   @@map("operating_expenses")
+}
+
+/// D-25 (3.7): la gerencia pide publicar el aviso de privacidad y la dueña lo
+/// firma. `bodyHash` es la huella del texto revisado: si el borrador cambia,
+/// la solicitud ya no vale.
+model ConsentSignatureRequest {
+  id                String    @id @db.Uuid
+  organizationId    String    @db.Uuid
+  documentId        String    @db.Uuid
+  /// PENDING | SIGNED | REJECTED | WITHDRAWN
+  status            String    @default("PENDING")
+  reason            String
+  checklist         Json      @default("[]")
+  bodyHash          String
+  requestedByUserId String    @db.Uuid
+  requestedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  resolvedByUserId  String?   @db.Uuid
+  resolvedAt        DateTime? @db.Timestamptz(3)
+  note              String?
+
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  document     ConsentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  // -- SQL: UNIQUE (documentId) WHERE status = 'PENDING'
+  @@index([organizationId, status, requestedAt], map: "consent_signature_requests_org_status_idx")
+  @@map("consent_signature_requests")
 }
 
 model Session {
@@ -820,12 +955,14 @@ model AuditLog {
 /// cartera o saldo. Es el mecanismo exacto por el que BDKGYM fragmenta al
 /// cliente, y existe aquí solo para reportes y asignación de coach.
 model Member {
-  id             String  @id @db.Uuid
-  organizationId String  @db.Uuid
-  memberCode     String
-  homeBranchId   String? @db.Uuid
+  membershipPriceChanges MembershipPriceChange[]
+  privacyBatchItems      PrivacyBatchItem[]
+  id                     String                  @id @db.Uuid
+  organizationId         String                  @db.Uuid
+  memberCode             String
+  homeBranchId           String?                 @db.Uuid
   /// Coach asignado: el coach ve solo a sus socios (2026-10-09).
-  coachUserId    String? @db.Uuid
+  coachUserId            String?                 @db.Uuid
 
   firstName String
   lastName  String
@@ -857,6 +994,16 @@ model Member {
   /// Antigüedad del SOCIO, no de la membresía: sobrevive a bajas y altas.
   joinedAt DateTime @db.Timestamptz(3)
 
+  /// El responsable (bloque 3.4): del celular que comparte con otro socio
+  /// (D-09) y, si es menor, su tutor (D-10). SELF = el número es suyo ·
+  /// MEMBER = es de otro socio · ADULT = un adulto que no es socio.
+  responsibleKind      String?
+  responsibleMemberId  String?   @db.Uuid
+  responsibleName      String?
+  responsiblePhoneE164 String?
+  /// Cuándo firmó el tutor en el mostrador (D-10).
+  guardianSignedAt     DateTime? @db.Timestamptz(3)
+
   /// Derecho de supresión (ARCO): se anonimiza la persona conservando el
   /// movimiento contable. Retención POR TIPO DE DATO, no por fila.
   anonymizedAt DateTime? @db.Timestamptz(3)
@@ -869,6 +1016,8 @@ model Member {
   organization       Organization          @relation(fields: [organizationId], references: [id])
   homeBranch         Branch?               @relation("MemberHomeBranch", fields: [homeBranchId, organizationId], references: [id, organizationId], map: "members_home_branch_same_org_fk")
   coach              User?                 @relation("MemberCoach", fields: [coachUserId, organizationId], references: [id, organizationId], map: "members_coach_same_org_fk", onDelete: Restrict, onUpdate: Cascade)
+  responsibleMember  Member?               @relation("MemberResponsible", fields: [responsibleMemberId, organizationId], references: [id, organizationId], map: "members_responsible_same_org_fk", onDelete: Restrict, onUpdate: Cascade)
+  responsibleOf      Member[]              @relation("MemberResponsible")
   consents           MemberConsent[]
   fromProspect       Prospect?             @relation("ProspectConversion")
   memberships        Membership[]
@@ -878,6 +1027,7 @@ model Member {
   posSales           PosSale[]
   accessDecisions    AccessDecision[]
   attendance         AttendanceEvent[]
+  trialPasses        TrialPass[]
   memberCredentials  MemberCredential[]
   portalInvites      PortalInvite[]
   memberSessions     MemberSession[]
@@ -895,8 +1045,11 @@ model Member {
   enrollments        BiometricEnrollment[]
 
   // -- SQL: UNIQUE (organizationId, memberCode) WHERE deletedAt IS NULL
-  // -- SQL: UNIQUE (organizationId, phoneE164) WHERE deletedAt IS NULL AND phoneE164 IS NOT NULL
+  // El celular ya NO es único (D-09, bloque 3.4): dos socios pueden compartirlo. Índice solo para buscar.
+  // -- SQL: CHECK members_responsible_kind_check (forma del responsable según `responsibleKind`)
   @@unique([id, organizationId], map: "members_id_org_key")
+  @@index([organizationId, phoneE164], map: "members_org_phone_idx")
+  @@index([organizationId, responsibleMemberId], map: "members_responsible_member_idx")
   /// Búsqueda de recepción con errores de captura. Se declara aquí, NO en SQL
   /// crudo: Prisma reconoce los índices GIN y los borraría como deriva.
   @@index([nameKey(ops: raw("gin_trgm_ops"))], type: Gin, map: "members_name_trgm_idx")
@@ -910,23 +1063,26 @@ model Member {
 /// Hay que poder demostrar quién aceptó QUÉ VERSIÓN y cuándo, mucho más allá
 /// de los ~135 días de la ventana real de contracargo (docs/07 §9.2).
 model MemberConsent {
-  id               String      @id @db.Uuid
-  organizationId   String      @db.Uuid
-  memberId         String      @db.Uuid
-  branchId         String?     @db.Uuid
-  consentType      ConsentType
-  documentVersion  String
+  id                String      @id @db.Uuid
+  organizationId    String      @db.Uuid
+  memberId          String      @db.Uuid
+  branchId          String?     @db.Uuid
+  consentType       ConsentType
+  documentVersion   String
   /// Texto exacto que se mostró al socio. Sin esto, la evidencia es una
   /// afirmación, no una prueba.
-  documentText     String?
-  granted          Boolean
-  grantedAt        DateTime    @db.Timestamptz(3)
-  revokedAt        DateTime?   @db.Timestamptz(3)
-  ip               String?
-  userAgent        String?
-  channel          String?
-  assistedByUserId String?     @db.Uuid
-  evidenceHash     String?
+  documentText      String?
+  granted           Boolean
+  grantedAt         DateTime    @db.Timestamptz(3)
+  revokedAt         DateTime?   @db.Timestamptz(3)
+  ip                String?
+  userAgent         String?
+  channel           String?
+  assistedByUserId  String?     @db.Uuid
+  evidenceHash      String?
+  /// Quién firmó POR el socio (bloque 3.4, D-10): el tutor de un menor, con su celular.
+  signedByName      String?
+  signedByPhoneE164 String?
 
   member         Member                @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "member_consents_member_same_org_fk")
   paymentMethods PaymentMethod[]
@@ -1003,8 +1159,9 @@ model ProspectSource {
 /// Catálogo de la ORGANIZACIÓN (§25). La variación por sucursal se modela
 /// aparte, NO duplicando el plan.
 model Plan {
-  id             String       @id @db.Uuid
-  organizationId String       @db.Uuid
+  priceChanges   PlanPriceChange[]
+  id             String            @id @db.Uuid
+  organizationId String            @db.Uuid
   code           String
   name           String
   description    String?
@@ -1109,13 +1266,14 @@ model MemberCodeCounter {
 /// un socio puede existir sin membresía activa, y eso es lo que permite
 /// conservar expediente, historial y saldo tras una baja.
 model Membership {
-  id             String           @id @db.Uuid
-  organizationId String           @db.Uuid
-  memberId       String           @db.Uuid
-  planId         String           @db.Uuid
+  priceChanges   MembershipPriceChange[]
+  id             String                  @id @db.Uuid
+  organizationId String                  @db.Uuid
+  memberId       String                  @db.Uuid
+  planId         String                  @db.Uuid
   /// Atribución de VENTA. No condiciona dónde entra ni dónde paga.
-  soldAtBranchId String?          @db.Uuid
-  status         MembershipStatus @default(PENDING)
+  soldAtBranchId String?                 @db.Uuid
+  status         MembershipStatus        @default(PENDING)
 
   startDate          DateTime  @db.Date
   /// Intervalo SEMIABIERTO [start, end): el fin de un periodo ES el inicio
@@ -1145,9 +1303,12 @@ model Membership {
 
   /// Clave de la VENTA que la creó (DM-08): el reintento de un mostrador con
   /// la red caída devuelve la misma venta en vez de "ya tiene una vigente".
-  saleKey          String?
+  saleKey              String?
   /// Precio pactado al vender (DM-05): las cuotas se cobran a este precio, no al de lista de hoy.
-  agreedPriceCents BigInt?
+  agreedPriceCents     BigInt?
+  /// «Conserva su precio» (D-19, bloque 3.6): un cambio de precio del plan no la toca salvo que alguien lo decida.
+  priceProtected       Boolean @default(false)
+  priceProtectedReason String?
 
   createdByUserId String?  @db.Uuid
   createdAt       DateTime @default(now()) @db.Timestamptz(3)
@@ -1747,15 +1908,19 @@ enum InventoryMovementType {
 }
 
 model Product {
-  id              String  @id @db.Uuid
-  organizationId  String  @db.Uuid
-  sku             String
-  name            String
-  priceCents      BigInt
-  currency        String  @default("MXN") @db.Char(3)
+  id               String  @id @db.Uuid
+  organizationId   String  @db.Uuid
+  sku              String
+  name             String
+  priceCents       BigInt
+  currency         String  @default("MXN") @db.Char(3)
+  /// Lo que le cuesta al gimnasio (D-21, opcional): sin costo, el Tablero cuenta la venta completa.
+  costCents        BigInt?
+  /// Precio para socios con membresía vigente (D-21, opcional): sin él, todos pagan `priceCents`.
+  memberPriceCents BigInt?
   /// Un servicio (p. ej. alquiler de casillero) no lleva existencias.
-  tracksInventory Boolean @default(true)
-  isActive        Boolean @default(true)
+  tracksInventory  Boolean @default(true)
+  isActive         Boolean @default(true)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
@@ -1834,13 +1999,17 @@ model PosSale {
 /// El precio se CONGELA en la línea. Derivarlo del producto al leer haría que
 /// una venta de hace tres meses cambiara de importe al subir el precio.
 model PosSaleLine {
-  id             String @id @db.Uuid
-  organizationId String @db.Uuid
-  posSaleId      String @db.Uuid
-  productId      String @db.Uuid
+  id             String  @id @db.Uuid
+  organizationId String  @db.Uuid
+  posSaleId      String  @db.Uuid
+  productId      String  @db.Uuid
   quantity       Int
   unitPriceCents BigInt
   lineTotalCents BigInt
+  /// Lo que costaba el producto el día de la venta (D-21); nulo si no tenía costo capturado.
+  unitCostCents  BigInt?
+  /// PUBLIC · MEMBER: a qué precio salió la línea.
+  priceKind      String  @default("PUBLIC")
 
   posSale PosSale @relation(fields: [posSaleId, organizationId], references: [id, organizationId], map: "pos_lines_sale_same_org_fk")
   product Product @relation(fields: [productId, organizationId], references: [id, organizationId], map: "pos_lines_product_same_org_fk")
@@ -2002,6 +2171,9 @@ model AccessDecision {
   /// levanta una sola vez, también si dos personas lo intentan a la vez.
   /// Nulo en todo lo que no es una concesión.
   resolvesDecisionId String? @db.Uuid
+  /// REENTRADA (D-07, bloque 3.3): ya había entrado hoy en esta sede. La
+  /// decisión se registra, pero no nace otra asistencia ni se descuenta visita.
+  reentry            Boolean @default(false)
 
   /**
    * Evidencia del reconocimiento biométrico (ADR-032).
@@ -2208,20 +2380,21 @@ enum ClassBookingSource {
 /// texto sea inmutable una vez publicado: si se pudiera editar, la evidencia
 /// de los que ya firmaron cambiaría sola.
 model ConsentDocument {
-  id                String                @id @db.Uuid
-  organizationId    String                @db.Uuid
+  signatureRequests ConsentSignatureRequest[]
+  id                String                    @id @db.Uuid
+  organizationId    String                    @db.Uuid
   consentType       ConsentType
   version           String
-  status            ConsentDocumentStatus @default(DRAFT)
+  status            ConsentDocumentStatus     @default(DRAFT)
   title             String
   bodyText          String
   /// sha256 del texto publicado. Es el ancla de la evidencia.
   bodyHash          String?
-  publishedAt       DateTime?             @db.Timestamptz(3)
-  publishedByUserId String?               @db.Uuid
-  retiredAt         DateTime?             @db.Timestamptz(3)
-  createdAt         DateTime              @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime              @updatedAt @db.Timestamptz(3)
+  publishedAt       DateTime?                 @db.Timestamptz(3)
+  publishedByUserId String?                   @db.Uuid
+  retiredAt         DateTime?                 @db.Timestamptz(3)
+  createdAt         DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                  @updatedAt @db.Timestamptz(3)
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
@@ -2258,6 +2431,9 @@ model MemberIntake {
   /// "¿Desde cuándo vienes?" — lo contesta el socio (ADR-029).
   memberSince           DateTime? @db.Date
   healthNotes           String?
+  /// Papá, mamá o tutor de quien tiene de 15 a 17 años (bloque 3.4, D-10).
+  guardianName          String?
+  guardianPhoneE164     String?
 
   /// Qué versión de qué documento aceptó, tal cual se le presentó.
   /// La evidencia definitiva se escribe en `member_consents` al aprobar.
@@ -2825,21 +3001,21 @@ model Exercise {
 
 /// La rutina que arma el coach. Los días viven en `dayNames` (1..7, en orden).
 model WorkoutTemplate {
-  id              String    @id @db.Uuid
-  organizationId  String    @db.Uuid
-  name            String
+  id                  String    @id @db.Uuid
+  organizationId      String    @db.Uuid
+  name                String
   /// FUERZA · HIPERTROFIA · RESISTENCIA · PERDIDA_PESO · GENERAL
-  goal            String?
+  goal                String?
   /// PRINCIPIANTE · INTERMEDIO · AVANZADO
-  level           String?
-  notes           String?
-  dayNames        String[]
-  createdByUserId String    @db.Uuid
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
-  archivedAt      DateTime? @db.Timestamptz(3)
+  level               String?
+  notes               String?
+  dayNames            String[]
+  createdByUserId     String    @db.Uuid
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(3)
+  archivedAt          DateTime? @db.Timestamptz(3)
   /// Copia personal de un socio («Personalizar para…», bloque 2.6): no sale en el catálogo.
-  personalForMemberId String? @db.Uuid
+  personalForMemberId String?   @db.Uuid
 
   organization Organization          @relation(fields: [organizationId], references: [id])
   items        WorkoutTemplateItem[]
@@ -3060,21 +3236,21 @@ model MemberNotice {
 /// Solicitudes ARCO (PS-07): la ley da plazo a cada una; sin fecha de entrada no
 /// hay forma de demostrar que se respondió a tiempo.
 model PrivacyRequest {
-  id               String    @id @db.Uuid
-  organizationId   String    @db.Uuid
-  memberId         String    @db.Uuid
+  id                       String    @id @db.Uuid
+  organizationId           String    @db.Uuid
+  memberId                 String    @db.Uuid
   /// ACCESS · RECTIFICATION · CANCELLATION · OPPOSITION · REVOCATION
-  kind             String
+  kind                     String
   /// FRONT_DESK · PORTAL · EMAIL · WRITTEN
-  channel          String
-  note             String?
-  receivedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  channel                  String
+  note                     String?
+  receivedAt               DateTime  @default(now()) @db.Timestamptz(3)
   /// 20 días hábiles según LFPDPPP art. 32; se guarda ya calculado.
-  dueAt            DateTime  @db.Timestamptz(3)
-  resolvedAt       DateTime? @db.Timestamptz(3)
-  resolvedByUserId String?   @db.Uuid
-  resolution       String?
-  createdByUserId  String?   @db.Uuid
+  dueAt                    DateTime  @db.Timestamptz(3)
+  resolvedAt               DateTime? @db.Timestamptz(3)
+  resolvedByUserId         String?   @db.Uuid
+  resolution               String?
+  createdByUserId          String?   @db.Uuid
   /// El permiso del que se opone o que revoca (OPPOSITION y REVOCATION).
   consentType              String?
   /// Sin identidad acreditada el plazo no corre (correo o escrito; 21-18).
@@ -3097,6 +3273,76 @@ model PrivacyRequest {
   @@index([organizationId, resolvedAt, dueAt])
   @@index([organizationId, memberId])
   @@map("privacy_requests")
+}
+
+/// CONSERVACIÓN (bloque 3.9; D-32). El día en que los plazos de conservación
+/// empezaron a correr en el gimnasio: lo escribe la primera pasada del cierre
+/// diario. Para las bajas anteriores, los 30 días del rostro cuentan desde
+/// aquí. Una fila por gimnasio; la aplicación solo inserta y lee.
+model PrivacyConservationStart {
+  organizationId String   @id @db.Uuid
+  startedOn      DateTime @db.Date
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: REVOKE UPDATE, DELETE.
+  @@map("privacy_conservation_starts")
+}
+
+/// La lista mensual de exsocios por anonimizar (D-32): la arma el cierre
+/// diario y la firma el dueño, una firma por lista. PENDING · SIGNED · REPLACED.
+model PrivacyBatch {
+  id                 String    @id @db.Uuid
+  organizationId     String    @db.Uuid
+  /// El mes de la lista: `2026-11`.
+  period             String
+  status             String    @default("PENDING")
+  /// El plazo con el que se armó y el último día de baja que entró.
+  monthsAfterArchive Int
+  cutoffOn           DateTime  @db.Date
+  preparedAt         DateTime  @default(now()) @db.Timestamptz(3)
+  signedAt           DateTime? @db.Timestamptz(3)
+  signedByUserId     String?   @db.Uuid
+  /// Cuándo quedó sin nada por hacer (todo resuelto) o cuándo se reemplazó.
+  closedAt           DateTime? @db.Timestamptz(3)
+
+  items        PrivacyBatchItem[]
+  organization Organization       @relation(fields: [organizationId], references: [id])
+  signedBy     User?              @relation("PrivacyBatchSigner", fields: [signedByUserId], references: [id], onDelete: Restrict)
+
+  // -- SQL: CHECK period, status, meses y firma; único parcial (organizationId) WHERE status = 'PENDING';
+  // -- SQL: trigger privacy_batches_firma_trg (lo firmado no cambia); FKs a organizations y users; REVOKE DELETE.
+  @@unique([organizationId, period], map: "privacy_batches_org_period_key")
+  @@unique([id, organizationId], map: "privacy_batches_id_org_key")
+  @@map("privacy_batches")
+}
+
+/// Un exsocio en una lista de conservación. Sin nombre: se lee de su ficha
+/// mientras exista. LISTED · ANONYMIZED · EXCLUDED · SKIPPED.
+model PrivacyBatchItem {
+  id               String    @id @db.Uuid
+  batchId          String    @db.Uuid
+  organizationId   String    @db.Uuid
+  memberId         String    @db.Uuid
+  memberCode       String
+  /// La baja con la que entró a la lista: si regresó y se volvió a ir, ya es otra.
+  archivedAt       DateTime  @db.Timestamptz(3)
+  /// El día de esa baja en la sede del socio.
+  archivedOn       DateTime  @db.Date
+  status           String    @default("LISTED")
+  note             String?
+  resolvedAt       DateTime? @db.Timestamptz(3)
+  resolvedByUserId String?   @db.Uuid
+
+  batch  PrivacyBatch @relation(fields: [batchId, organizationId], references: [id, organizationId], map: "privacy_batch_items_batch_same_org_fk")
+  member Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "privacy_batch_items_member_same_org_fk", onDelete: Cascade)
+
+  // -- SQL: CHECK status, resuelto y motivo; trigger privacy_batch_items_firma_trg (nadie se anonimiza sin la firma de su lista);
+  // -- SQL: FK (memberId, organizationId) → members ON DELETE CASCADE; REVOKE DELETE.
+  @@unique([batchId, memberId], map: "privacy_batch_items_batch_member_key")
+  @@index([organizationId, memberId], map: "privacy_batch_items_org_member_idx")
+  @@map("privacy_batch_items")
 }
 
 /// Suscripciones Web Push del personal (DP-10): la firma llega al teléfono del
@@ -3125,19 +3371,19 @@ model PushSubscription {
 /// firma el dueño. Lo que llegue después se reconoce en el mes corriente como
 /// "ajuste de meses anteriores": el Tablero no reescribe agosto.
 model MonthlyClose {
-  id             String   @id @db.Uuid
-  organizationId String   @db.Uuid
+  id               String   @id @db.Uuid
+  organizationId   String   @db.Uuid
   /// Primer día del mes cerrado (UTC).
-  month          DateTime @db.Date
+  month            DateTime @db.Date
   /// Totales de la organización y por sede, en centavos como texto (ADR-005).
-  totals         Json
-  byBranch       Json
-  closedByUserId String   @db.Uuid
+  totals           Json
+  byBranch         Json
+  closedByUserId   String   @db.Uuid
   /// Quién firmó el cierre (la segunda firma). Null si cerró el dueño con su
   /// propia contraseña (sin gerente, D-23) o en fotos anteriores al bloque 1.9.
   approvedByUserId String?  @db.Uuid
-  closedAt       DateTime @default(now()) @db.Timestamptz(3)
-  note           String?
+  closedAt         DateTime @default(now()) @db.Timestamptz(3)
+  note             String?
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
@@ -3183,7 +3429,7 @@ model OutboundMessage {
   /// La sede de casa del socio cuando nació el mensaje (la lista mira la de HOY).
   branchId         String?   @db.Uuid
   memberId         String    @db.Uuid
-  /// MEMBERSHIP_SUSPENDED · PAYMENT_OVERDUE · PAYMENT_DUE_SOON · MEMBERSHIP_ENDING · WE_MISS_YOU
+  /// MEMBERSHIP_SUSPENDED · PAYMENT_OVERDUE · PAYMENT_DUE_SOON · MEMBERSHIP_ENDING · WE_MISS_YOU · PRICE_CHANGE
   kind             String
   /// WHATSAPP_LINK (el enlace que abre recepción). Un proveedor sería otro valor.
   channel          String    @default("WHATSAPP_LINK")
@@ -3194,6 +3440,8 @@ model OutboundMessage {
   /// El hecho: el cargo (pago por vencer o vencido) o la membresía (suspendida, por terminar). Sin FK: solo se lee.
   chargeId         String?   @db.Uuid
   membershipId     String?   @db.Uuid
+  /// Solo PRICE_CHANGE: el cambio de precio del que avisa (`membership_price_changes`). Sin FK: solo se lee.
+  priceChangeId    String?   @db.Uuid
   /// Solo WE_MISS_YOU: ONBOARDING_AT_RISK · SLIPPING · DORMANT (de ahí sale la plantilla).
   engagementState  String?
   /// Lo que se mandó, tal cual. NULL mientras no se mande.
@@ -3254,6 +3502,33 @@ model FaceMeasurement {
   @@map("face_measurements")
 }
 
+/// PASE DE PRUEBA (auditoría 8, fase 3, bloque 3.3; D-08): gratis, UNO por
+/// persona, identificada por su celular. Vale el día de operación `validOn` en
+/// la sede `branchId`. No es un cargo ni una membresía. El celular no se
+/// guarda: `phoneKey` es su huella (sha256 con el gimnasio) y `phoneLast4`
+/// sus últimos cuatro dígitos.
+model TrialPass {
+  id              String   @id @db.Uuid
+  organizationId  String   @db.Uuid
+  branchId        String   @db.Uuid
+  memberId        String   @db.Uuid
+  phoneKey        String
+  phoneLast4      String
+  validOn         DateTime @db.Date
+  grantedByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Branch       @relation("TrialPassBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "trial_passes_branch_same_org_fk")
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "trial_passes_member_same_org_fk")
+
+  // -- SQL: CHECK ("phoneLast4" ~ '^[0-9]{4}$')
+  @@unique([organizationId, phoneKey], map: "trial_passes_org_phone_key")
+  @@unique([organizationId, memberId], map: "trial_passes_org_member_key")
+  @@index([organizationId, branchId, validOn], map: "trial_passes_org_branch_day_idx")
+  @@map("trial_passes")
+}
+
 /// CADENA DE PLATAFORMA (auditoría 8, 24-19 y 23-09; bloque 1.11). Lo que
 /// GymFlow hace desde su consola, en UNA cadena de hashes propia: el espejo
 /// enlazado de cada asiento `platform.*` de las marcas y lo que solo pasa en
@@ -3287,4 +3562,53 @@ model PlatformAuditLog {
   @@index([at(sort: Desc), id(sort: Desc)], map: "platform_audit_logs_chain_tip_idx")
   @@index([organizationId, at(sort: Desc)])
   @@map("platform_audit_logs")
+}
+
+/// CAMBIO DE PRECIO DE UN PLAN (auditoría 8, fase 3, bloque 3.6; D-19): el acto.
+/// Subir (o bajar) el precio de un plan mueve en la misma transacción el precio
+/// pactado de sus membresías vivas; conservan el suyo las marcadas
+/// `priceProtected`, salvo que quien cambia el precio decida incluirlas.
+model PlanPriceChange {
+  id                 String   @id @db.Uuid
+  organizationId     String   @db.Uuid
+  planId             String   @db.Uuid
+  fromPriceCents     BigInt
+  toPriceCents       BigInt
+  includedProtected  Boolean  @default(false)
+  touchedCount       Int      @default(0)
+  protectedKeptCount Int      @default(0)
+  reason             String
+  createdByUserId    String?  @db.Uuid
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization            @relation(fields: [organizationId], references: [id])
+  plan         Plan                    @relation(fields: [planId, organizationId], references: [id, organizationId], map: "plan_price_changes_plan_same_org_fk")
+  membresias   MembershipPriceChange[]
+
+  // -- SQL: la aplicación solo inserta y lee.
+  @@index([organizationId, planId, createdAt], map: "plan_price_changes_org_plan_idx")
+  @@map("plan_price_changes")
+}
+
+/// A quién le cambió el precio y de cuánto a cuánto (bloque 3.6; D-19). De aquí
+/// salen el aviso al teléfono (bandeja de salida) y la línea del recibo.
+model MembershipPriceChange {
+  id                String   @id @db.Uuid
+  organizationId    String   @db.Uuid
+  planPriceChangeId String   @db.Uuid
+  membershipId      String   @db.Uuid
+  memberId          String   @db.Uuid
+  fromPriceCents    BigInt
+  toPriceCents      BigInt
+  wasProtected      Boolean  @default(false)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+
+  acto       PlanPriceChange @relation(fields: [planPriceChangeId], references: [id], map: "membership_price_changes_acto_fkey")
+  member     Member          @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "membership_price_changes_member_same_org_fk", onDelete: Cascade)
+  membership Membership      @relation(fields: [membershipId], references: [id], map: "membership_price_changes_membership_fkey", onDelete: Cascade)
+
+  // -- SQL: la aplicación solo inserta y lee.
+  @@unique([planPriceChangeId, membershipId], map: "membership_price_changes_acto_membresia_key")
+  @@index([organizationId, membershipId, createdAt], map: "membership_price_changes_org_membership_idx")
+  @@map("membership_price_changes")
 }
