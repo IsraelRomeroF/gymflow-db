@@ -196,6 +196,10 @@ model Organization {
   enrollments            BiometricEnrollment[]
   classTypes             ClassType[]
   classSettings          ClassSettings?
+  // Bloque 3.5 (D-13, D-15): marcas y devoluciones de tienda, y los topes del cajón.
+  posSaleFlags           PosSaleFlag[]
+  posSaleReturns         PosSaleReturn[]
+  cashSettings           CashSettings?
   classPauses            ClassPause[]
   paymentMethods         PaymentMethod[]
   webhookEvents          WebhookEvent[]
@@ -205,9 +209,12 @@ model Organization {
   memberNotices          MemberNotice[]
   privacyRequests        PrivacyRequest[]
   pushSubscriptions      PushSubscription[]
+  approvalProxies        ApprovalProxy[]
   monthlyCloses          MonthlyClose[]
   followUps              FollowUp[]
   outboundMessages       OutboundMessage[]
+  memberPushSubscriptions       MemberPushSubscription[]
+  memberNotificationPreferences MemberNotificationPreference[]
   prospectSources        ProspectSource[]
   faceTemplates          FaceTemplate[]
   faceMeasurements       FaceMeasurement[]
@@ -309,6 +316,10 @@ model User {
   mfaFactors        MfaFactor[]
   auditLogs         AuditLog[]         @relation("AuditActor")
   pushSubscriptions PushSubscription[]
+  /// Bloque 3.1: nombramientos de apoderado que dio (dueño) y que recibió, y sus equipos conocidos.
+  approvalProxiesGranted ApprovalProxy[] @relation("ApprovalProxyGrantor")
+  approvalProxiesHeld    ApprovalProxy[] @relation("ApprovalProxyHolder")
+  knownDevices           KnownDevice[]
 
   @@unique([id, organizationId], map: "users_id_org_key")
   // -- SQL: UNIQUE (organization_id, lower(email)) WHERE deleted_at IS NULL
@@ -434,9 +445,58 @@ model ApprovalGrant {
   expiresAt         DateTime  @db.Timestamptz(3)
   usedAt            DateTime? @db.Timestamptz(3)
   createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  /// D-02 (bloque 3.1): el nombramiento con el que se firmó «como apoderado»; null = firmó el dueño.
+  proxyId           String?   @db.Uuid
+  proxy             ApprovalProxy? @relation(fields: [proxyId], references: [id], onDelete: Restrict)
 
   @@index([organizationId, approverUserId, createdAt])
   @@map("approval_grants")
+}
+
+/// APODERADO TEMPORAL (D-02, bloque 3.1): el dueño nombra a UNA persona con
+/// fecha de fin para dar la segunda firma a lo que piden los demás. Vigente =
+/// `endedAt` null y `endsAt` en el futuro. Nunca se borra (constancia). Un
+/// solo nombramiento abierto por gimnasio: índice único parcial en la migración.
+model ApprovalProxy {
+  id              String    @id @db.Uuid
+  organizationId  String    @db.Uuid
+  grantedByUserId String    @db.Uuid
+  proxyUserId     String    @db.Uuid
+  note            String?
+  endsAt          DateTime  @db.Timestamptz(3)
+  endedAt         DateTime? @db.Timestamptz(3)
+  /// REVOKED (lo revocó el dueño), EXPIRED (llegó su fecha) o REPLACED (se nombró a otra persona).
+  endReason       String?
+  endedByUserId   String?   @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  grantedBy    User         @relation("ApprovalProxyGrantor", fields: [grantedByUserId], references: [id], onDelete: Restrict)
+  proxyUser    User         @relation("ApprovalProxyHolder", fields: [proxyUserId], references: [id], onDelete: Restrict)
+  grants       ApprovalGrant[]
+  requests     ApprovalRequest[]
+
+  @@index([organizationId, createdAt])
+  @@index([proxyUserId])
+  @@map("approval_proxies")
+}
+
+/// EQUIPO CONOCIDO (D-01, bloque 3.1): el navegador en el que una persona ya
+/// entró con su cuenta. Guarda solo el sha256 de una llave al azar que vive en
+/// una cookie; con él y la contraseña correcta el titular pasa el bloqueo por
+/// intentos fallidos aunque su IP haya cambiado.
+model KnownDevice {
+  id         String   @id @db.Uuid
+  userId     String   @db.Uuid
+  keyHash    String
+  label      String?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  lastUsedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, keyHash])
+  @@map("known_devices")
 }
 
 /// AUTORIZACIÓN A DISTANCIA: quien opera pide la firma y quien puede darla
@@ -485,6 +545,9 @@ model ApprovalRequest {
   /// Lo que contestó quien pidió.
   answer            String?
   answeredAt        DateTime?         @db.Timestamptz(3)
+  /// D-02 (bloque 3.1): el nombramiento con el que se contestó «como apoderado»; null = contestó el dueño.
+  proxyId           String?           @db.Uuid
+  proxy             ApprovalProxy?    @relation(fields: [proxyId], references: [id], onDelete: Restrict)
   expiresAt         DateTime          @db.Timestamptz(3)
   createdAt         DateTime          @default(now()) @db.Timestamptz(3)
 
@@ -526,6 +589,10 @@ model OrganizationModule {
   reason          String?
   updatedAt       DateTime @default(now()) @db.Timestamptz(3)
   updatedByUserId String?  @db.Uuid
+  /// Apagar con borrado avisado (3.12, D-32: los rostros de Biometría): el día
+  /// en que se borra y cuántos decía el aviso. NULL = nada avisado, nada se borra.
+  erasureOn       DateTime? @db.Date
+  erasureWarned   Int?
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
@@ -797,6 +864,9 @@ model BranchModuleOverride {
   reason          String?
   updatedAt       DateTime @default(now()) @db.Timestamptz(3)
   updatedByUserId String?  @db.Uuid
+  /// Como en `organization_modules`, para lo apagado en una sola sucursal (3.12).
+  erasureOn       DateTime? @db.Date
+  erasureWarned   Int?
 
   branch Branch @relation(fields: [branchId, organizationId], references: [id, organizationId], map: "branch_module_overrides_branch_same_org_fk")
 
@@ -931,6 +1001,10 @@ model AuditLog {
   /// en la base de datos. Un job diario la verifica (ADR-018).
   prevHash         String?
   hash             String
+  /// Número de eslabón en la cadena de su organización (3.12): decide la punta
+  /// y el orden de verificación, no la hora del servidor. NULL = asentado
+  /// antes de que existiera; ese tramo se verifica por (at, id) y va primero.
+  chainSeq         Int?
   at               DateTime       @default(now()) @db.Timestamptz(3)
   businessDate     DateTime       @db.Date
 
@@ -938,7 +1012,8 @@ model AuditLog {
   actor        User?        @relation("AuditActor", fields: [actorUserId], references: [id])
 
   // -- SQL: REVOKE UPDATE, DELETE ON audit_logs FROM gymflow_app
-  /// Recupera el último eslabón de la cadena por organización.
+  @@unique([organizationId, chainSeq])
+  /// Recupera el último eslabón del tramo anterior a `chainSeq` y ordena las listas.
   @@index([organizationId, at(sort: Desc), id(sort: Desc)], map: "audit_logs_chain_tip_idx")
   @@index([organizationId, at(sort: Desc)])
   @@index([organizationId, resourceType, resourceId])
@@ -1041,6 +1116,9 @@ model Member {
   notices            MemberNotice[]
   followUps          FollowUp[]
   outboundMessages   OutboundMessage[]
+  pushSubscriptions  MemberPushSubscription[]
+  /// A lo más una: la llave de la tabla es `memberId`.
+  notificationPreferences MemberNotificationPreference[]
   privacyRequests    PrivacyRequest[]
   enrollments        BiometricEnrollment[]
 
@@ -1840,6 +1918,7 @@ model CashSession {
   movements    CashMovement[]
   payments     Payment[]
   posSales     PosSale[]
+  posSaleReturns PosSaleReturn[]
 
   @@unique([id, organizationId], map: "cash_sessions_id_org_key")
   // -- SQL: UNIQUE (cashRegisterId) WHERE status = 'OPEN'
@@ -1978,6 +2057,10 @@ model PosSale {
   member       Member?       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "pos_sales_member_same_org_fk")
   charge       Charge?       @relation(fields: [chargeId, organizationId], references: [id, organizationId], map: "pos_sales_charge_same_org_fk")
   lines        PosSaleLine[]
+  // Bloque 3.5 (D-13): «por corregir» y la devolución de otro día.
+  // (A lo más una de cada una: lo garantiza el índice único por venta.)
+  flags        PosSaleFlag[]
+  saleReturns  PosSaleReturn[]
 
   @@unique([id, organizationId], map: "pos_sales_id_org_key")
   /// Soporte de la relación 1:1 con el cargo, que además impide que dos ventas
@@ -2020,6 +2103,83 @@ model PosSaleLine {
   @@index([posSaleId])
   @@index([organizationId, productId])
   @@map("pos_sale_lines")
+}
+
+/// «Por corregir» (D-13, bloque 3.5): recepción no anula una venta, avisa. La
+/// gerencia la anula el mismo día, registra su devolución otro día (con la
+/// firma de la dueña) o descarta el aviso. Una fila por venta: volver a
+/// marcarla reabre la misma.
+model PosSaleFlag {
+  id               String    @id @db.Uuid
+  organizationId   String    @db.Uuid
+  posSaleId        String    @unique(map: "pos_sale_flags_sale_key") @db.Uuid
+  branchId         String    @db.Uuid
+  reason           String
+  flaggedByUserId  String    @db.Uuid
+  flaggedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  /// VOIDED · RETURNED · DISMISSED; nulo mientras sigue por corregir.
+  resolution       String?
+  resolvedByUserId String?   @db.Uuid
+  resolvedAt       DateTime? @db.Timestamptz(3)
+  resolutionNote   String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  posSale      PosSale      @relation(fields: [posSaleId, organizationId], references: [id, organizationId], map: "pos_sale_flags_sale_same_org_fk")
+
+  // -- SQL: CHECK (length(btrim(reason)) >= 3)
+  // -- SQL: CHECK (resolution IN ('VOIDED','RETURNED','DISMISSED'))
+  // -- SQL: CHECK de coherencia: resuelta = con quién y cuándo
+  // -- SQL: REVOKE DELETE
+  @@index([organizationId, branchId, resolvedAt], map: "pos_sale_flags_org_branch_idx")
+  @@map("pos_sale_flags")
+}
+
+/// La devolución de una venta de tienda de OTRO día (D-13, bloque 3.5): el
+/// dinero sale hoy, el producto vuelve al inventario y la venta original no
+/// se toca. Siempre con la firma de la dueña. Una por venta, entera.
+model PosSaleReturn {
+  id               String            @id @db.Uuid
+  organizationId   String            @db.Uuid
+  posSaleId        String            @unique(map: "pos_sale_returns_sale_key") @db.Uuid
+  branchId         String            @db.Uuid
+  amountCents      BigInt
+  method           PaymentMethodType
+  /// El turno abierto del que sale el dinero (efectivo o terminal en una sede con Caja).
+  cashSessionId    String?           @db.Uuid
+  returnRef        String?
+  reason           String
+  approvedByUserId String            @db.Uuid
+  createdByUserId  String            @db.Uuid
+  businessDate     DateTime          @db.Date
+  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  posSale      PosSale      @relation(fields: [posSaleId, organizationId], references: [id, organizationId], map: "pos_sale_returns_sale_same_org_fk")
+  cashSession  CashSession? @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "pos_sale_returns_session_same_org_fk")
+
+  // -- SQL: CHECK (amountCents > 0)
+  // -- SQL: CHECK (length(btrim(reason)) >= 3)
+  // -- SQL: CHECK (approvedByUserId <> createdByUserId)
+  // -- SQL: REVOKE UPDATE, DELETE (append-only)
+  @@index([organizationId, branchId, businessDate], map: "pos_sale_returns_org_branch_date_idx")
+  @@index([cashSessionId], map: "pos_sale_returns_session_idx")
+  @@map("pos_sale_returns")
+}
+
+/// Los topes del cajón de un gimnasio (D-15, bloque 3.5). Sin fila valen los
+/// del núcleo: $500 de fondo y gasto chico sin firma, $5,000 de retiros y
+/// depósitos de recepción por turno.
+model CashSettings {
+  organizationId            String   @id @db.Uuid
+  pettyLimitCents           BigInt
+  withdrawalShiftLimitCents BigInt
+  updatedAt                 DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+  updatedByUserId           String?  @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: CHECK de rangos (0 a $10,000 y 0 a $100,000)
+  @@map("cash_settings")
 }
 
 /// Las existencias son POR SUCURSAL: el refresco está físicamente en un
@@ -2332,6 +2492,7 @@ model MemberSession {
 
   member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "member_sessions_member_same_org_fk")
   organization Organization @relation(fields: [organizationId], references: [id])
+  pushSubscriptions MemberPushSubscription[]
 
   // -- SQL: CHECK ((revokedAt IS NULL) = (revokedReason IS NULL))
   @@index([memberId, expiresAt])
@@ -2608,6 +2769,9 @@ model ClassBooking {
   lateCancel      Boolean            @default(false)
   checkedInAt     DateTime?          @db.Timestamptz(3)
   closedAt        DateTime?          @db.Timestamptz(3)
+  /// D-16 (bloque 3.5): hasta cuándo se guarda el lugar de una clase suelta que aún no se paga
+  /// (una hora antes de empezar). Pasada esa hora sin pago, se libera y no debe nada.
+  holdUntil       DateTime?          @db.Timestamptz(3)
 
   classSchedule ClassSchedule @relation(fields: [classScheduleId, organizationId], references: [id, organizationId], map: "class_bookings_schedule_same_org_fk")
   member        Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "class_bookings_member_same_org_fk")
@@ -2620,6 +2784,7 @@ model ClassBooking {
   // -- SQL: CHECK ((status = 'CANCELED') = (canceledAt IS NOT NULL))
   @@index([organizationId, memberId, bookedAt(sort: Desc)])
   @@index([classScheduleId, status])
+  @@index([organizationId, holdUntil], map: "class_bookings_hold_idx")
   @@map("class_bookings")
 }
 
@@ -3094,6 +3259,41 @@ model WorkoutLog {
   @@map("workout_logs")
 }
 
+/// «HACERME SU COACH» (D-29, fase 3, bloque 3.8). El código que el socio
+/// genera en su teléfono y le dicta a su coach: seis dígitos, un solo uso,
+/// diez minutos. El valor en claro solo existe en la pantalla del socio.
+model CoachLinkCode {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  memberId       String    @db.Uuid
+  /// sha256 de gimnasio + código MIENTRAS está vivo; nulo al usarse, anularse
+  /// o limpiarse ya caducado. Única: dos códigos vivos nunca coinciden.
+  liveKey        String?   @unique
+  expiresAt      DateTime  @db.Timestamptz(3)
+  usedAt         DateTime? @db.Timestamptz(3)
+  usedByUserId   String?   @db.Uuid
+  /// Lo anuló uno más nuevo del mismo socio, o caducó sin usarse.
+  revokedAt      DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  // -- SQL: CHECK (liveKey IS NULL OR (usedAt IS NULL AND revokedAt IS NULL))
+  @@index([organizationId, memberId])
+  @@map("coach_link_codes")
+}
+
+/// Cada código que un coach teclea en «Hacerme su coach», para el límite de
+/// intentos: cinco fallos en una hora lo dejan en espera.
+model CoachLinkAttempt {
+  id             String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  userId         String   @db.Uuid
+  succeeded      Boolean
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([organizationId, userId, createdAt])
+  @@map("coach_link_attempts")
+}
+
 /// IMPORTACIÓN DE SOCIOS (docs/09 §3–4). Un archivo del sistema anterior
 /// entra aquí en crudo y limpio, se compara contra los socios existentes y
 /// entre sus propias filas, una persona del gimnasio revisa lo dudoso y solo
@@ -3461,6 +3661,46 @@ model OutboundMessage {
   @@map("outbound_messages")
 }
 
+/// El teléfono del socio que encendió las notificaciones del portal (fase 3,
+/// bloque 3.10; D-34 c). Web Push con llaves propias del servidor: gratis y sin
+/// proveedor. El `endpoint` es único en el mundo: un navegador recibe los
+/// avisos de UN socio. Atada a la sesión del portal de ese teléfono.
+model MemberPushSubscription {
+  id             String    @id @db.Uuid
+  organizationId String    @db.Uuid
+  memberId       String    @db.Uuid
+  sessionId      String    @db.Uuid
+  endpoint       String    @unique
+  p256dh         String
+  auth           String
+  userAgent      String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastUsedAt     DateTime? @db.Timestamptz(3)
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  member       Member        @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "member_push_subscriptions_member_same_org_fk")
+  session      MemberSession @relation(fields: [sessionId], references: [id], onDelete: Cascade, map: "member_push_subscriptions_session_fkey")
+
+  @@index([organizationId, memberId], map: "member_push_subscriptions_org_member_idx")
+  @@index([sessionId], map: "member_push_subscriptions_session_idx")
+  @@map("member_push_subscriptions")
+}
+
+/// De qué quiere el socio que se le notifique al teléfono (bloque 3.10; D-34).
+/// Sin fila, todo encendido. Lo de seguridad y de acceso llega siempre.
+model MemberNotificationPreference {
+  memberId       String   @id @db.Uuid
+  organizationId String   @db.Uuid
+  payments       Boolean  @default(true)
+  classes        Boolean  @default(true)
+  updatedAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "member_notification_preferences_member_same_org_fk")
+
+  @@map("member_notification_preferences")
+}
+
 /// Plantilla facial de la cámara de recepción (2026-10-09): el embedding
 /// cifrado, ligado a su enrolamiento (y por él, a su consentimiento). Se borra
 /// al revocar el enrolamiento.
@@ -3554,6 +3794,8 @@ model PlatformAuditLog {
   requestId             String?
   prevHash              String?
   hash                  String
+  /// Número de eslabón (3.12), igual que en `audit_logs`; NULL = anterior a la secuencia.
+  chainSeq              Int?     @unique
   /// Cuándo pasó (igual a `at` salvo en lo importado de antes de la cadena).
   occurredAt            DateTime @db.Timestamptz(3)
   at                    DateTime @default(now()) @db.Timestamptz(3)
