@@ -3416,7 +3416,7 @@ model MemberNotice {
   id             String    @id @db.Uuid
   organizationId String    @db.Uuid
   memberId       String    @db.Uuid
-  /// PAYMENT_DUE_SOON · PAYMENT_OVERDUE · CLASS_TOMORROW · INTAKE_APPROVED · PRIVACY_NOTICE_UPDATED · NEW_DEVICE · MEMBERSHIP_SUSPENDED
+  /// PAYMENT_DUE_SOON · PAYMENT_OVERDUE · CLASS_TOMORROW · INTAKE_APPROVED · PRIVACY_NOTICE_UPDATED · NEW_DEVICE · MEMBERSHIP_SUSPENDED · CLASS_HOLD_RELEASED
   kind           String
   title          String
   body           String
