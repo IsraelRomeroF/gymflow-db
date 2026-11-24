@@ -167,6 +167,16 @@ model Organization {
   autoSuspendHoldUntil   DateTime?                 @db.Date
   /// La suspensión vigente la hizo el sistema por falta de pago, no una persona.
   suspendedAutomatically Boolean                   @default(false)
+  // Bloque 4.6 (D-27): datos y marca que administra la plataforma; el panel solo los muestra.
+  rfc                    String?
+  /// Teléfono y WhatsApp del gimnasio (E.164).
+  phone                  String?
+  whatsapp               String?
+  /// Lo que se imprime al pie del recibo.
+  receiptLegend          String?
+  /// El logo, como `data:` URL de una imagen pequeña (PNG, JPEG o WebP).
+  logo                   String?
+  changeRequests         GymChangeRequest[]
   platformNotices        PlatformNotice[]
   branches               Branch[]
   modules                OrganizationModule[]
@@ -200,6 +210,7 @@ model Organization {
   posSaleFlags           PosSaleFlag[]
   posSaleReturns         PosSaleReturn[]
   cashSettings           CashSettings?
+  memberTermSettings     MemberTermSettings?
   classPauses            ClassPause[]
   paymentMethods         PaymentMethod[]
   webhookEvents          WebhookEvent[]
@@ -215,7 +226,9 @@ model Organization {
   outboundMessages       OutboundMessage[]
   memberPushSubscriptions       MemberPushSubscription[]
   memberNotificationPreferences MemberNotificationPreference[]
+  memberContactChanges          MemberContactChange[]
   prospectSources        ProspectSource[]
+  prospectAutoCloseStart ProspectAutoCloseStart?
   faceTemplates          FaceTemplate[]
   faceMeasurements       FaceMeasurement[]
   trialPasses            TrialPass[]
@@ -265,6 +278,11 @@ model Branch {
   classTemplates   ClassTemplate[]          @relation("ClassTemplateBranch")
   classSchedules   ClassSchedule[]          @relation("ClassScheduleBranch")
   classPauses      ClassPause[]             @relation("ClassPauseBranch")
+  // Bloque 4.6 (D-27): teléfono y horario de la sucursal; los administra la plataforma.
+  phone            String?
+  /// En texto: «Lunes a viernes de 6:00 a 22:00».
+  openingHours     String?
+  changeRequests   GymChangeRequest[]
 
   /// Soporte de las FKs compuestas que impiden cruzar tenants (ADR-001).
   moduleOverrides BranchModuleOverride[]
@@ -320,6 +338,7 @@ model User {
   approvalProxiesGranted ApprovalProxy[] @relation("ApprovalProxyGrantor")
   approvalProxiesHeld    ApprovalProxy[] @relation("ApprovalProxyHolder")
   knownDevices           KnownDevice[]
+  gymChangeRequests      GymChangeRequest[]
 
   @@unique([id, organizationId], map: "users_id_org_key")
   // -- SQL: UNIQUE (organization_id, lower(email)) WHERE deleted_at IS NULL
@@ -760,6 +779,44 @@ model PlatformNotice {
   @@map("platform_notices")
 }
 
+/// «PEDIR UN CAMBIO A GYMFLOW» (D-27, bloque 4.6): la solicitud que la dueña o
+/// la gerencia mandan desde «Mi gimnasio» para cambiar un dato o la marca. La
+/// plataforma la aplica o la rechaza con respuesta. No se borra.
+model GymChangeRequest {
+  id                String    @id @db.Uuid
+  organizationId    String    @db.Uuid
+  /// Solo en los datos de sucursal (BRANCH_PHONE, BRANCH_HOURS).
+  branchId          String?   @db.Uuid
+  /// LEGAL_NAME · RFC · TRADE_NAME · LOGO · PHONE · WHATSAPP · RECEIPT_LEGEND · BRANCH_PHONE · BRANCH_HOURS · OTHER
+  field             String
+  proposedValue     String?
+  /// Solo con LOGO: la imagen propuesta, como `data:` URL.
+  proposedLogo      String?
+  reason            String
+  requestedByUserId String    @db.Uuid
+  requestedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  /// PENDING · APPLIED · REJECTED
+  status            String    @default("PENDING")
+  /// Lo que GymFlow le contesta a quien la pidió (obligatorio al rechazar).
+  response          String?
+  /// El valor que quedó al aplicarla (GymFlow puede ajustar lo propuesto).
+  appliedValue      String?
+  /// La cuenta de plataforma que la resolvió.
+  resolvedByUserId  String?   @db.Uuid
+  resolvedAt        DateTime? @db.Timestamptz(3)
+  /// Cuándo vio el resultado quien la pidió.
+  seenAt            DateTime? @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  requestedBy  User         @relation(fields: [requestedByUserId], references: [id], onDelete: Restrict)
+
+  // -- SQL: CHECK de campo, estado, resuelta ⇔ fecha, rechazo con respuesta, sede ⇔ dato de sucursal; REVOKE DELETE
+  @@index([organizationId, requestedAt], map: "gym_change_requests_org_idx")
+  @@index([status, requestedAt], map: "gym_change_requests_status_idx")
+  @@map("gym_change_requests")
+}
+
 model PlatformPrice {
   moduleKey       String   @id
   monthlyCents    BigInt
@@ -899,11 +956,68 @@ model OperatingExpense {
   adjustsExpenseId String?            @db.Uuid
   adjustsExpense   OperatingExpense?  @relation("ExpenseAdjustment", fields: [adjustsExpenseId], references: [id], onDelete: Restrict)
   adjustedBy       OperatingExpense[] @relation("ExpenseAdjustment")
+  /// Bloque 4.3 (caja): el retiro del cajón con el que salió este «Retiro del dueño», si salió de una caja.
+  cashMovement     CashMovement?
+  /// D-26 (4.5): un PAGO de nómina lleva su fecha y a quién (persona del
+  /// personal y su nombre al anotarlo, o solo el nombre escrito a mano).
+  paidOn           DateTime?          @db.Date
+  payeeUserId      String?            @db.Uuid
+  payeeName        String?
+  /// Salió de confirmar la propuesta `recurringDue` de un gasto que se repite.
+  recurringId      String?            @db.Uuid
+  recurringDue     DateTime?          @db.Date
+  recurring        RecurringExpense?  @relation(fields: [recurringId], references: [id], onDelete: Restrict)
 
   // -- SQL: CHECK amountCents > 0, o < 0 solo si corrige un gasto (adjustsExpenseId)
   // -- SQL: UNIQUE (adjustsExpenseId) WHERE vigente: un gasto se corrige una vez
+  // -- SQL: CHECK fecha y persona juntas y solo en PAYROLL; la fecha, dentro del mes que cuenta (4.5)
+  // -- SQL: UNIQUE (recurringId, recurringDue) WHERE vigente: una propuesta se confirma una vez (4.5)
   @@index([organizationId, periodMonth])
   @@map("operating_expenses")
+}
+
+/// D-26 (4.5): un gasto que se repite. Es la plantilla: no cuenta en ninguna
+/// cifra. Cada periodo propone un gasto «por confirmar»; nada se anota solo.
+model RecurringExpense {
+  id              String                 @id @db.Uuid
+  organizationId  String                 @db.Uuid
+  branchId        String?                @db.Uuid
+  category        String
+  description     String
+  amountCents     BigInt
+  /// MONTHLY | BIWEEKLY (día 15 y último) | WEEKLY
+  frequency       String
+  /// La primera fecha en que se propone.
+  startsOn        DateTime               @db.Date
+  payeeUserId     String?                @db.Uuid
+  payeeName       String?
+  createdByUserId String                 @db.Uuid
+  createdAt       DateTime               @default(now()) @db.Timestamptz(3)
+  endedAt         DateTime?              @db.Timestamptz(3)
+  endedByUserId   String?                @db.Uuid
+  endReason       String?
+  expenses        OperatingExpense[]
+  skips           RecurringExpenseSkip[]
+
+  // -- SQL: sin DELETE para la aplicación; CHECK de importe, frecuencia, categoría y persona solo en PAYROLL
+  @@index([organizationId, endedAt])
+  @@map("recurring_expenses")
+}
+
+/// La propuesta que alguien descartó (4.5). Solo agregar.
+model RecurringExpenseSkip {
+  id              String           @id @db.Uuid
+  organizationId  String           @db.Uuid
+  recurringId     String           @db.Uuid
+  dueOn           DateTime         @db.Date
+  reason          String?
+  skippedByUserId String           @db.Uuid
+  skippedAt       DateTime         @default(now()) @db.Timestamptz(3)
+  recurring       RecurringExpense @relation(fields: [recurringId], references: [id], onDelete: Restrict)
+
+  @@unique([recurringId, dueOn])
+  @@index([organizationId, dueOn])
+  @@map("recurring_expense_skips")
 }
 
 /// D-25 (3.7): la gerencia pide publicar el aviso de privacidad y la dueña lo
@@ -948,6 +1062,11 @@ model Session {
   mfaSatisfied   Boolean   @default(false)
   /// Reconfirmación con el segundo factor para acciones críticas de plataforma.
   stepUpUntil    DateTime? @db.Timestamptz(3)
+  /// De qué LUGAR es la sesión (D-04, bloque 4.1): COUNTER (mostrador, 12 h
+  /// fijas) u OWNER_PHONE (teléfono de la dueña, 30 días que se renuevan con
+  /// el uso). Se decide al entrar con la contraseña y no cambia.
+  // -- SQL: CHECK (kind IN ('COUNTER', 'OWNER_PHONE'))
+  kind           String    @default("COUNTER")
   createdAt      DateTime  @default(now()) @db.Timestamptz(3)
   lastSeenAt     DateTime  @default(now()) @db.Timestamptz(3)
   expiresAt      DateTime  @db.Timestamptz(3)
@@ -1117,6 +1236,8 @@ model Member {
   followUps          FollowUp[]
   outboundMessages   OutboundMessage[]
   pushSubscriptions  MemberPushSubscription[]
+  /// Lo que él mismo cambió de su contacto desde el portal (bloque 4.8; D-36).
+  contactChanges     MemberContactChange[]
   /// A lo más una: la llave de la tabla es `memberId`.
   notificationPreferences MemberNotificationPreference[]
   privacyRequests    PrivacyRequest[]
@@ -1209,14 +1330,35 @@ model Prospect {
   closedAt           DateTime? @db.Timestamptz(3)
   closedByUserId     String?   @db.Uuid
 
+  /// D-31 (bloque 4.7). El plan que preguntó: la venta abre con él.
+  interestPlanId String?   @db.Uuid
+  /// Cuándo lo reabrieron por última vez: el plazo del cierre solo (60 días
+  /// sin contacto, `prospectAutoCloseOn` del núcleo) vuelve a contar desde aquí.
+  reopenedAt     DateTime? @db.Timestamptz(3)
+
   convertedMember Member?    @relation("ProspectConversion", fields: [convertedMemberId], references: [id])
+  interestPlan    Plan?      @relation("ProspectInterestPlan", fields: [interestPlanId], references: [id], onDelete: SetNull, map: "prospects_interestPlanId_fkey")
   followUps       FollowUp[]
 
   @@index([nameKey(ops: raw("gin_trgm_ops"))], type: Gin, map: "prospects_name_trgm_idx")
   @@index([organizationId, branchId, status, createdAt(sort: Desc)])
   @@index([organizationId, status, dueOn], map: "prospects_org_status_due_idx")
   @@index([organizationId, phoneE164], map: "prospects_org_phone_idx")
+  @@index([interestPlanId], map: "prospects_interest_plan_idx")
   @@map("prospects")
+}
+
+/// Desde qué día el cierre solo de interesados (D-31, bloque 4.7) cierra de
+/// verdad en un gimnasio. La primera corrida de `prospects.auto-close` solo
+/// crea esta fila, una semana adelante: así nadie amanece con la lista vacía.
+model ProspectAutoCloseStart {
+  organizationId String   @id @db.Uuid
+  startsOn       DateTime @db.Date
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("prospect_auto_close_starts")
 }
 
 /// «¿Cómo se enteró?» (bloque 2.4, 10-17): la lista que arma la gerencia. Un
@@ -1289,6 +1431,8 @@ model Plan {
   organization       Organization             @relation(fields: [organizationId], references: [id])
   branchAvailability PlanBranchAvailability[]
   memberships        Membership[]
+  /// Interesados que preguntaron por este plan (D-31, bloque 4.7).
+  interestedProspects Prospect[] @relation("ProspectInterestPlan")
 
   // -- SQL: UNIQUE (organizationId, code) WHERE deletedAt IS NULL
   @@unique([id, organizationId], map: "plans_id_org_key")
@@ -1662,6 +1806,11 @@ model Charge {
   voidReason     String?
   writtenOffAt   DateTime? @db.Timestamptz(3)
   writeOffReason String?
+  /// D-18 (bloque 4.4): el día en que esta deuda se dio por PERDIDA (su
+  /// membresía llevó suspendida el plazo del gimnasio). No es condonación ni
+  /// anulación: conserva estado y saldo, sigue en el estado de cuenta y se
+  /// puede cobrar; solo deja de sumarse en «Por cobrar».
+  lostOn         DateTime? @db.Date
 
   createdByUserId String?  @db.Uuid
   createdAt       DateTime @default(now()) @db.Timestamptz(3)
@@ -1913,6 +2062,14 @@ model CashSession {
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
   closedAt DateTime? @db.Timestamptz(3)
 
+  /// D-17 (fase 4, bloque 4.3). El descuadre es de quien abrió (`openedByUserId`).
+  /// 'PENDING': cerró con más de $20 de diferencia y la gerencia no lo ha
+  /// revisado; 'REVIEWED': lo cerró con su nota. Nulo: no hay nada que revisar.
+  varianceStatus           String?
+  varianceReviewedByUserId String?   @db.Uuid
+  varianceReviewedAt       DateTime? @db.Timestamptz(3)
+  varianceReviewNote       String?
+
   cashRegister CashRegister   @relation(fields: [cashRegisterId, organizationId], references: [id, organizationId], map: "sessions_register_same_org_fk")
   branch       Branch         @relation("CashSessionBranch", fields: [branchId, organizationId], references: [id, organizationId], map: "sessions_branch_same_org_fk")
   movements    CashMovement[]
@@ -1926,8 +2083,11 @@ model CashSession {
   // -- SQL: CHECK (status = 'OPEN' OR countedCashCents IS NOT NULL)
   // -- SQL: CHECK (varianceCents IS NULL OR varianceCents = 0 OR varianceReason IS NOT NULL)
   // -- SQL: CHECK (openingFloatCents >= 0)
+  // -- SQL: CHECK varianceStatus en ('PENDING','REVIEWED'), solo en un turno cortado con diferencia,
+  //         y 'REVIEWED' con quién, cuándo y nota (bloque 4.3)
   @@index([organizationId, branchId, businessDate])
   @@index([organizationId, status, openedAt])
+  @@index([organizationId, varianceStatus], map: "cash_sessions_org_variance_status_idx")
   @@map("cash_sessions")
 }
 
@@ -1951,7 +2111,12 @@ model CashMovement {
   /// medianoche reparte sus movimientos entre los dos días, como los pagos.
   businessDate DateTime @db.Date
 
-  cashSession CashSession @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "movements_session_same_org_fk")
+  /// «Retiro del dueño» que salió del cajón (bloque 4.3): su anotación en
+  /// Movimientos, creada en la misma transacción. Nulo en todo lo demás.
+  expenseId String? @unique(map: "cash_movements_expense_key") @db.Uuid
+
+  cashSession CashSession       @relation(fields: [cashSessionId, organizationId], references: [id, organizationId], map: "movements_session_same_org_fk")
+  expense     OperatingExpense? @relation(fields: [expenseId], references: [id], onDelete: Restrict, map: "cash_movements_expense_fk")
 
   // -- SQL: CHECK (amountCents <> 0)
   // -- SQL: CHECK de coherencia entre movementType y el signo
@@ -2164,6 +2329,26 @@ model PosSaleReturn {
   @@index([organizationId, branchId, businessDate], map: "pos_sale_returns_org_branch_date_idx")
   @@index([cashSessionId], map: "pos_sale_returns_session_idx")
   @@map("pos_sale_returns")
+}
+
+/// Los plazos del socio de un gimnasio (D-18, bloque 4.4). Sin fila, o con una
+/// columna nula, vale el de fábrica del núcleo (`PLAZOS_DEL_SOCIO`: 21, 30, 60,
+/// 6 meses, 7 y 90).
+model MemberTermSettings {
+  organizationId  String   @id @db.Uuid
+  dormantDays     Int?
+  churnDays       Int?
+  lostDays        Int?
+  winbackMonths   Int?
+  unpaidSaleDays  Int?
+  lostDebtDays    Int?
+  updatedAt       DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+  updatedByUserId String?  @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: CHECK de rangos (los de `DEFINICION_DE_PLAZOS` del núcleo)
+  @@map("member_term_settings")
 }
 
 /// Los topes del cajón de un gimnasio (D-15, bloque 3.5). Sin fila valen los
@@ -3684,6 +3869,42 @@ model MemberPushSubscription {
   @@index([organizationId, memberId], map: "member_push_subscriptions_org_member_idx")
   @@index([sessionId], map: "member_push_subscriptions_session_idx")
   @@map("member_push_subscriptions")
+}
+
+/// Un dato de contacto que el SOCIO cambió desde el portal (fase 4, bloque 4.8;
+/// D-36 c: todo directo, incluido el celular). Una fila por dato, con el valor
+/// de antes y el de ahora: es lo que el mostrador ve para confirmar con el
+/// socio que fue él, y con lo que se cuenta el tope de cambios por periodo.
+/// La bitácora no lleva los valores; viven aquí y se vacían al anonimizar.
+model MemberContactChange {
+  id               String    @id @db.Uuid
+  organizationId   String    @db.Uuid
+  memberId         String    @db.Uuid
+  /// Lo que se guardó junto, en un mismo toque.
+  batchId          String    @db.Uuid
+  /// PHONE · EMAIL · EMERGENCY_NAME · EMERGENCY_PHONE
+  field            String
+  oldValue         String?
+  newValue         String?
+  /// El celular nuevo es también el de otro socio vivo (D-09) y quién dijo el socio que responde por él.
+  sharedPhone      Boolean   @default(false)
+  responsibleKind  String?
+  /// La sesión del portal (el teléfono) desde la que se hizo. Sin FK: las sesiones se purgan.
+  sessionId        String?   @db.Uuid
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  /// Alguien del mostrador lo confirmó con el socio. Sin FK a `users`: solo se lee.
+  reviewedAt       DateTime? @db.Timestamptz(3)
+  reviewedByUserId String?   @db.Uuid
+  /// Los valores se vaciaron porque la ficha se anonimizó.
+  forgottenAt      DateTime? @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  member       Member       @relation(fields: [memberId, organizationId], references: [id, organizationId], onDelete: Cascade, map: "member_contact_changes_member_same_org_fk")
+
+  // -- SQL: CHECK de `field`
+  @@index([organizationId, memberId, createdAt], map: "member_contact_changes_org_member_idx")
+  @@index([organizationId, reviewedAt], map: "member_contact_changes_org_pending_idx")
+  @@map("member_contact_changes")
 }
 
 /// De qué quiere el socio que se le notifique al teléfono (bloque 3.10; D-34).
