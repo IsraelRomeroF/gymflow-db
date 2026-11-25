@@ -134,6 +134,7 @@ model Organization {
   planPriceChanges         PlanPriceChange[]
   privacyBatches           PrivacyBatch[]
   privacyConservationStart PrivacyConservationStart?
+  privacyCalculatedBajaStart PrivacyCalculatedBajaStart?
   id                       String                    @id @db.Uuid
   legalName                String
   tradeName                String
@@ -1562,6 +1563,8 @@ model MemberCodeCounter {
 /// conservar expediente, historial y saldo tras una baja.
 model Membership {
   priceChanges   MembershipPriceChange[]
+  /// Bloque 4.20 (P-14): cuándo llegó cada aumento guardado «por llegar».
+  priceApplications MembershipPriceApplication[]
   id             String                  @id @db.Uuid
   organizationId String                  @db.Uuid
   memberId       String                  @db.Uuid
@@ -3748,6 +3751,21 @@ model PrivacyConservationStart {
   @@map("privacy_conservation_starts")
 }
 
+/// P-01 (fase 4, bloque 4.18): el día en que la baja calculada (canceló, o
+/// terminó sin renovar) empezó a contar para la conservación en el gimnasio.
+/// A quien ese día ya era baja calculada, los 30 días del rostro le cuentan
+/// desde aquí (arranque suave). Una fila por gimnasio que no se mueve.
+model PrivacyCalculatedBajaStart {
+  organizationId String   @id @db.Uuid
+  startedOn      DateTime @db.Date
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  // -- SQL: REVOKE UPDATE, DELETE.
+  @@map("privacy_calculated_baja_starts")
+}
+
 /// La lista mensual de exsocios por anonimizar (D-32): la arma el cierre
 /// diario y la firma el dueño, una firma por lista. PENDING · SIGNED · REPLACED.
 model PrivacyBatch {
@@ -3788,6 +3806,8 @@ model PrivacyBatchItem {
   archivedAt       DateTime  @db.Timestamptz(3)
   /// El día de esa baja en la sede del socio.
   archivedOn       DateTime  @db.Date
+  /// P-01 (4.18): ARCHIVED (dado de baja en su ficha) · CANCELED / EXPIRED (la baja calculada de D-18).
+  bajaCause        String    @default("ARCHIVED")
   status           String    @default("LISTED")
   note             String?
   resolvedAt       DateTime? @db.Timestamptz(3)
@@ -4180,6 +4200,8 @@ model PlanPriceChange {
   reason             String
   createdByUserId    String?  @db.Uuid
   createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  /// Bloque 4.20 (P-14): desde qué día rige. Un aumento, 15 días después de guardarse; NULL = anterior a 4.20 (rigió al guardarse).
+  appliesFrom        DateTime? @db.Date
 
   organization Organization            @relation(fields: [organizationId], references: [id])
   plan         Plan                    @relation(fields: [planId, organizationId], references: [id, organizationId], map: "plan_price_changes_plan_same_org_fk")
@@ -4202,8 +4224,13 @@ model MembershipPriceChange {
   toPriceCents      BigInt
   wasProtected      Boolean  @default(false)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  /// Bloque 4.20 (P-14): un aumento con fecha «rige desde» espera hasta la primera cuota que empiece y se emita desde ese día. NULL = rigió al guardarse.
+  appliesFrom       DateTime? @db.Date
+  /// La previsión del primer cobro al precio nuevo (lo que dicen la pantalla y el aviso).
+  firstChargeOn     DateTime? @db.Date
 
   acto       PlanPriceChange @relation(fields: [planPriceChangeId], references: [id], map: "membership_price_changes_acto_fkey")
+  aplicacion MembershipPriceApplication?
   member     Member          @relation(fields: [memberId, organizationId], references: [id, organizationId], map: "membership_price_changes_member_same_org_fk", onDelete: Cascade)
   membership Membership      @relation(fields: [membershipId], references: [id], map: "membership_price_changes_membership_fkey", onDelete: Cascade)
 
@@ -4211,4 +4238,23 @@ model MembershipPriceChange {
   @@unique([planPriceChangeId, membershipId], map: "membership_price_changes_acto_membresia_key")
   @@index([organizationId, membershipId, createdAt], map: "membership_price_changes_org_membership_idx")
   @@map("membership_price_changes")
+}
+
+/// Cuándo llegó un aumento «por llegar» a una membresía: la cuota que ya lo lleva (bloque 4.20; P-14).
+model MembershipPriceApplication {
+  id                      String   @id @db.Uuid
+  organizationId          String   @db.Uuid
+  membershipPriceChangeId String   @db.Uuid
+  membershipId            String   @db.Uuid
+  /// La cuota emitida con el precio nuevo (sin llave: la cuota nunca se borra).
+  chargeId                String?  @db.Uuid
+  createdAt               DateTime @default(now()) @db.Timestamptz(3)
+
+  cambio     MembershipPriceChange @relation(fields: [membershipPriceChangeId], references: [id], map: "membership_price_applications_cambio_fkey", onDelete: Cascade)
+  membership Membership            @relation(fields: [membershipId], references: [id], map: "membership_price_applications_membership_fkey", onDelete: Cascade)
+
+  // -- SQL: la aplicación solo inserta y lee.
+  @@unique([membershipPriceChangeId], map: "membership_price_applications_cambio_key")
+  @@index([organizationId, membershipId], map: "membership_price_applications_org_membership_idx")
+  @@map("membership_price_applications")
 }
